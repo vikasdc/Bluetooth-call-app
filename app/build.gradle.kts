@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.kapt)
+    alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
 }
 
@@ -80,10 +81,10 @@ dependencies {
     implementation(libs.hilt.android)
     kapt(libs.hilt.compiler)
 
-    // Room (call history)
+    // Room (call history) — uses KSP to avoid sqlite-jdbc aarch64 issue on Apple Silicon
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
-    kapt(libs.room.compiler)
+    ksp(libs.room.compiler)
 
     // Navigation
     implementation(libs.navigation.fragment.ktx)
