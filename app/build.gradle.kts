@@ -57,6 +57,15 @@ android {
     }
 }
 
+// Force sqlite-jdbc to a version that ships aarch64 macOS natives.
+// room-compiler's DatabaseVerifier loads this at KSP time to validate schema SQL.
+// The version bundled with room-compiler 2.6.1 (3.43.0.0) sometimes fails to extract
+// its native lib on Apple Silicon. 3.45.1.0 is the first release with a stable
+// Mac/aarch64 dylib that reliably extracts to the OS temp directory.
+configurations.all {
+    resolutionStrategy.force("org.xerial:sqlite-jdbc:3.45.1.0")
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
@@ -81,10 +90,13 @@ dependencies {
     implementation(libs.hilt.android)
     kapt(libs.hilt.compiler)
 
-    // Room (call history) — uses KSP to avoid sqlite-jdbc aarch64 issue on Apple Silicon
+    // Room (call history)
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
+    // Explicitly add sqlite-jdbc with aarch64 support to the KSP processor classpath.
+    // Without this, KSP may resolve an older version that lacks the Mac/aarch64 native lib.
+    ksp("org.xerial:sqlite-jdbc:3.45.1.0")
 
     // Navigation
     implementation(libs.navigation.fragment.ktx)
@@ -96,4 +108,10 @@ dependencies {
 
 kapt {
     correctErrorTypes = true
+}
+
+ksp {
+    // Required when using KSP with Room — tells Room where to write exported schemas.
+    arg("room.schemaLocation", "$projectDir/schemas")
+    arg("room.incremental", "true")
 }
