@@ -143,7 +143,7 @@ class RfcommManager @Inject constructor(private val context: Context) {
      * Prefixes each write with a 2-byte length header so the reader can
      * reconstruct exact packet boundaries from the stream.
      *
-     * Frame format: [len_high][len_low][payload...]
+     * Frame format: `len_high(1) | len_low(1) | payload(N)`
      */
     suspend fun sendData(data: ByteArray) = withContext(Dispatchers.IO) {
         val socket = clientSocket ?: throw IOException("No active RFCOMM connection")

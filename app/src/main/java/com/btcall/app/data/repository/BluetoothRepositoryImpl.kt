@@ -3,6 +3,7 @@ package com.btcall.app.data.repository
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import java.io.IOException
 import com.btcall.app.data.bluetooth.BleAdvertiser
 import com.btcall.app.data.bluetooth.BleScanner
 import com.btcall.app.data.bluetooth.DeviceIdProvider
@@ -217,5 +218,3 @@ class BluetoothRepositoryImpl @Inject constructor(
     }
 }
 
-// Needed since we can't import java.io.IOException in this file's context
-private class IOException(message: String) : Exception(message)
