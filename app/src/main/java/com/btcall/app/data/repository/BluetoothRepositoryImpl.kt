@@ -3,6 +3,7 @@ package com.btcall.app.data.repository
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.IOException
 import com.btcall.app.data.bluetooth.BleAdvertiser
 import com.btcall.app.data.bluetooth.BleScanner
@@ -40,7 +41,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class BluetoothRepositoryImpl @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
     private val bleAdvertiser: BleAdvertiser,
     private val bleScanner: BleScanner,
     private val gattServer: GattServer,

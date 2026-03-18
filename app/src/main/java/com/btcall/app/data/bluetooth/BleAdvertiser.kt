@@ -7,6 +7,7 @@ import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import android.os.ParcelUuid
+import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,7 +24,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class BleAdvertiser @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
     private val deviceIdProvider: DeviceIdProvider
 ) {
     private var advertiser: BluetoothLeAdvertiser? = null

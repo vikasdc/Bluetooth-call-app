@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,7 +40,7 @@ import javax.inject.Singleton
  * which doesn't require pairing (acceptable for this app).
  */
 @Singleton
-class RfcommManager @Inject constructor(private val context: Context) {
+class RfcommManager @Inject constructor(@ApplicationContext private val context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 

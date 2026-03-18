@@ -2,6 +2,7 @@ package com.btcall.app.data.bluetooth
 
 import android.content.Context
 import android.content.SharedPreferences
+import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -13,7 +14,7 @@ import javax.inject.Singleton
  * and store our own stable UUID in SharedPreferences.
  */
 @Singleton
-class DeviceIdProvider @Inject constructor(context: Context) {
+class DeviceIdProvider @Inject constructor(@ApplicationContext context: Context) {
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("btcall_prefs", Context.MODE_PRIVATE)

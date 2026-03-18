@@ -8,6 +8,7 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.ParcelUuid
 import com.btcall.app.domain.model.PeerDevice
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -26,7 +27,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class BleScanner @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
     private val deviceIdProvider: DeviceIdProvider
 ) {
     private var isScanning = false
