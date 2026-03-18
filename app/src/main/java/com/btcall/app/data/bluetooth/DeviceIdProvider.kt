@@ -18,7 +18,7 @@ class DeviceIdProvider @Inject constructor(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("btcall_prefs", Context.MODE_PRIVATE)
 
-    private val deviceId: String by lazy {
+    private val _deviceId: String by lazy {
         prefs.getString(KEY_DEVICE_ID, null) ?: run {
             val newId = UUID.randomUUID().toString()
             prefs.edit().putString(KEY_DEVICE_ID, newId).apply()
@@ -26,7 +26,7 @@ class DeviceIdProvider @Inject constructor(context: Context) {
         }
     }
 
-    fun getDeviceId(): String = deviceId
+    fun getDeviceId(): String = _deviceId
 
     companion object {
         private const val KEY_DEVICE_ID = "device_id"
