@@ -15,6 +15,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -136,10 +137,10 @@ class AudioCaptureEngine @Inject constructor() {
     private suspend fun runCaptureLoop(record: AudioRecord) {
         val pcmBuffer = ByteArray(OpusCodec.FRAME_SIZE_BYTES)
 
-        while (isActive) {
+        while (currentCoroutineContext().isActive) {
             // Read exactly one 20ms frame
             var bytesRead = 0
-            while (bytesRead < OpusCodec.FRAME_SIZE_BYTES && isActive) {
+            while (bytesRead < OpusCodec.FRAME_SIZE_BYTES && currentCoroutineContext().isActive) {
                 val n = record.read(
                     pcmBuffer,
                     bytesRead,

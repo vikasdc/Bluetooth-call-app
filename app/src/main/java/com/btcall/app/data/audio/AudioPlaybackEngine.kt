@@ -11,6 +11,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -105,7 +106,7 @@ class AudioPlaybackEngine @Inject constructor(
         val frameDurationMs = (OpusCodec.FRAME_SIZE_SAMPLES * 1000L) / OpusCodec.SAMPLE_RATE  // = 20ms
         val silenceFrame = OpusCodec.generateSilenceFrame()
 
-        while (isActive) {
+        while (currentCoroutineContext().isActive) {
             val startMs = System.currentTimeMillis()
 
             val packet = jitterBuffer.dequeue()
