@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_incoming_call">
+
+    <!-- Ripple animation background (decorative) -->
+    <View
+        android:id="@+id/ripple_outer"
+        android:layout_width="220dp"
+        android:layout_height="220dp"
+        android:background="@drawable/ripple_circle_outer"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/tv_caller_name"
+        app:layout_constraintVerticalBias="0.7" />
+
+    <View
+        android:id="@+id/ripple_inner"
+        android:layout_width="160dp"
+        android:layout_height="160dp"
+        android:background="@drawable/ripple_circle_inner"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="@id/ripple_outer"
+        app:layout_constraintBottom_toBottomOf="@id/ripple_outer" />
+
+    <!-- Avatar placeholder -->
+    <ImageView
+        android:id="@+id/iv_caller_avatar"
+        android:layout_width="96dp"
+        android:layout_height="96dp"
+        android:src="@drawable/ic_person"
+        android:tint="@color/white"
+        android:background="@drawable/bg_avatar_circle"
+        android:padding="20dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="@id/ripple_outer"
+        app:layout_constraintBottom_toBottomOf="@id/ripple_outer" />
+
+    <!-- Caller name -->
+    <TextView
+        android:id="@+id/tv_caller_name"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="40dp"
+        android:textColor="@color/white"
+        android:textSize="32sp"
+        android:textStyle="bold"
+        android:fontFamily="sans-serif-medium"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/ripple_outer" />
+
+    <!-- Call type label -->
+    <TextView
+        android:id="@+id/tv_call_type"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textColor="#CCFFFFFF"
+        android:textSize="16sp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tv_caller_name" />
+
+    <!-- Action buttons row -->
+    <LinearLayout
+        android:id="@+id/layout_actions"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="72dp"
+        android:orientation="horizontal"
+        android:gravity="center"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <!-- Reject button -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginEnd="48dp">
+
+            <ImageButton
+                android:id="@+id/btn_reject"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:src="@drawable/ic_call_end"
+                android:tint="@color/white"
+                android:background="@drawable/bg_reject_button"
+                android:padding="20dp"
+                android:contentDescription="Reject call" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Decline"
+                android:textColor="#CCFFFFFF"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <!-- Accept button -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginStart="48dp">
+
+            <ImageButton
+                android:id="@+id/btn_accept"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:src="@drawable/ic_call"
+                android:tint="@color/white"
+                android:background="@drawable/bg_accept_button"
+                android:padding="20dp"
+                android:contentDescription="Accept call" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Accept"
+                android:textColor="#CCFFFFFF"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

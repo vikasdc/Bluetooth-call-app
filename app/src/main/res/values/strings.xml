@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BTCall</string>
+    <string name="title_nearby_devices">Nearby Devices</string>
+    <string name="title_incoming_call">Incoming Call</string>
+    <string name="title_active_call">Active Call</string>
+
+    <string name="btn_call">Call</string>
+    <string name="btn_accept">Accept</string>
+    <string name="btn_decline">Decline</string>
+    <string name="btn_end_call">End</string>
+    <string name="btn_mute">Mute</string>
+    <string name="btn_unmute">Unmute</string>
+
+    <string name="bluetooth_call_notification">Bluetooth Voice Call</string>
+    <string name="empty_nearby">Searching for nearby devices…\nMake sure the other device has BTCall open.</string>
+    <string name="bluetooth_off">Bluetooth is off. Please enable Bluetooth to use BTCall.</string>
+</resources>

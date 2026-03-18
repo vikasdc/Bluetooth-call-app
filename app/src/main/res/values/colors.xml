@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Background palette -->
+    <color name="bg_primary">#0F1117</color>
+    <color name="bg_card">#1A1D27</color>
+    <color name="bg_incoming_call">#1A237E</color>
+    <color name="bg_active_call">#1B2631</color>
+
+    <!-- Text -->
+    <color name="text_primary">#EAEAEA</color>
+    <color name="text_secondary">#8A8D9F</color>
+
+    <!-- Accents -->
+    <color name="accent_blue">#5C9BFF</color>
+    <color name="accent_green">#2ECC71</color>
+    <color name="accent_red">#E74C3C</color>
+
+    <!-- Status -->
+    <color name="status_available">#2ECC71</color>
+    <color name="status_busy">#E74C3C</color>
+
+    <!-- Misc -->
+    <color name="divider">#2A2D3E</color>
+    <color name="white">#FFFFFF</color>
+    <color name="transparent">#00000000</color>
+
+    <!-- Material required -->
+    <color name="purple_200">#5C9BFF</color>
+    <color name="purple_500">#5C9BFF</color>
+    <color name="purple_700">#3A78DD</color>
+    <color name="teal_200">#2ECC71</color>
+    <color name="teal_700">#27AE60</color>
+    <color name="black">#FF000000</color>
+</resources>
