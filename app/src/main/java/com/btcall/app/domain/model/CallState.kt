@@ -39,7 +39,8 @@ sealed class CallState {
     data class Connected(
         val remotePeer: PeerDevice,
         val isMuted: Boolean = false,
-        val durationSeconds: Long = 0L
+        val durationSeconds: Long = 0L,
+        val isSpeakerOn: Boolean = true
     ) : CallState()
 
     /**

@@ -65,6 +65,9 @@ interface BluetoothRepository {
     /** Flow of raw byte arrays received over RFCOMM. */
     val incomingAudioData: Flow<ByteArray>
 
+    /** True while an RFCOMM socket is open and the read loop is alive. */
+    val rfcommConnected: Flow<Boolean>
+
     /** Close the RFCOMM socket and free resources. */
     fun disconnectRfcomm()
 

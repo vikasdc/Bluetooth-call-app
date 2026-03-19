@@ -93,7 +93,12 @@ class NearbyDevicesFragment : Fragment() {
     private fun observeCallState() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                val service = (requireActivity() as? MainActivity)?.callService ?: return@repeatOnLifecycle
+                // Wait for the service to bind (may take a moment after fragment start)
+                var service = (requireActivity() as? MainActivity)?.callService
+                while (service == null) {
+                    kotlinx.coroutines.delay(200)
+                    service = (requireActivity() as? MainActivity)?.callService
+                }
                 service.callState.collect { state ->
                     updateCallStateUi(state)
                 }

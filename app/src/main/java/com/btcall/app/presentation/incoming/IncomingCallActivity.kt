@@ -46,9 +46,15 @@ class IncomingCallActivity : AppCompatActivity() {
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             callService = (binder as BluetoothCallService.LocalBinder).getService()
+            binding.btnAccept.isEnabled = true
+            binding.btnReject.isEnabled = true
             observeCallState()
         }
-        override fun onServiceDisconnected(name: ComponentName) { callService = null }
+        override fun onServiceDisconnected(name: ComponentName) {
+            callService = null
+            binding.btnAccept.isEnabled = false
+            binding.btnReject.isEnabled = false
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -72,6 +78,10 @@ class IncomingCallActivity : AppCompatActivity() {
 
         binding.tvCallerName.text = callerName
         binding.tvCallType.text = "Bluetooth Voice Call"
+
+        // Disable until service is bound — prevents crash if user taps immediately
+        binding.btnAccept.isEnabled = false
+        binding.btnReject.isEnabled = false
 
         binding.btnAccept.setOnClickListener { acceptCall() }
         binding.btnReject.setOnClickListener { rejectCall() }

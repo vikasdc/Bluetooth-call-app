@@ -22,6 +22,7 @@ class ActiveCallViewModel @Inject constructor() : ViewModel() {
     data class UiState(
         val remotePeer: PeerDevice? = null,
         val isMuted: Boolean = false,
+        val isSpeakerOn: Boolean = true,
         val durationSeconds: Long = 0L,
         val connectionQuality: ConnectionQuality = ConnectionQuality.GOOD,
         val isEnded: Boolean = false
@@ -39,6 +40,7 @@ class ActiveCallViewModel @Inject constructor() : ViewModel() {
                     it.copy(
                         remotePeer = state.remotePeer,
                         isMuted = state.isMuted,
+                        isSpeakerOn = state.isSpeakerOn,
                         durationSeconds = state.durationSeconds,
                         isEnded = false
                     )

@@ -59,6 +59,11 @@ class ActiveCallFragment : Fragment() {
             val currentMuted = viewModel.uiState.value.isMuted
             (requireActivity() as? MainActivity)?.callService?.setMuted(!currentMuted)
         }
+
+        binding.btnSpeaker.setOnClickListener {
+            val currentSpeaker = viewModel.uiState.value.isSpeakerOn
+            (requireActivity() as? MainActivity)?.callService?.setSpeakerphone(!currentSpeaker)
+        }
     }
 
     private fun observeUiState() {
@@ -72,8 +77,13 @@ class ActiveCallFragment : Fragment() {
                     binding.btnMute.setImageResource(
                         if (state.isMuted) R.drawable.ic_mic_off else R.drawable.ic_mic_on
                     )
-
                     binding.tvMuteLabel.text = if (state.isMuted) "Unmute" else "Mute"
+
+                    // Speaker button icon update
+                    binding.btnSpeaker.setImageResource(
+                        if (state.isSpeakerOn) R.drawable.ic_speaker_on else R.drawable.ic_speaker_off
+                    )
+                    binding.tvSpeakerLabel.text = if (state.isSpeakerOn) "Speaker" else "Earpiece"
                 }
             }
         }
@@ -82,9 +92,11 @@ class ActiveCallFragment : Fragment() {
     private fun observeCallState() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                val service = (requireActivity() as? MainActivity)?.callService
-                    ?: return@repeatOnLifecycle
-
+                var service = (requireActivity() as? MainActivity)?.callService
+                while (service == null) {
+                    kotlinx.coroutines.delay(200)
+                    service = (requireActivity() as? MainActivity)?.callService
+                }
                 service.callState.collect { state ->
                     viewModel.updateFromCallState(state)
                 }

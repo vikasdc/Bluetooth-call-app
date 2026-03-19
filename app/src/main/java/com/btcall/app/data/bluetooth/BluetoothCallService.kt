@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.media.AudioManager
 import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -28,6 +29,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
@@ -80,7 +83,12 @@ class BluetoothCallService : LifecycleService() {
     private var audioSendJob: Job? = null
     private var audioReceiveJob: Job? = null
     private var callTimeoutJob: Job? = null
+    private var rfcommDisconnectJob: Job? = null
     private var currentDirection = CallDirection.INCOMING
+
+    private val audioManager: AudioManager by lazy {
+        getSystemService(AUDIO_SERVICE) as AudioManager
+    }
 
     inner class LocalBinder : Binder() {
         fun getService(): BluetoothCallService = this@BluetoothCallService
@@ -193,11 +201,21 @@ class BluetoothCallService : LifecycleService() {
         val peer = current.remotePeer
 
         lifecycleScope.launch {
-            // Connect RFCOMM to callee
-            bluetoothRepository.connectRfcomm(peer).onSuccess {
+            // RFCOMM connect with retries — callee server socket may not be ready instantly
+            var connected = false
+            for (attempt in 1..3) {
+                val result = bluetoothRepository.connectRfcomm(peer)
+                if (result.isSuccess) {
+                    connected = true
+                    break
+                }
+                Timber.w("RFCOMM connect attempt $attempt failed: ${result.exceptionOrNull()?.message}")
+                if (attempt < 3) delay(500L * attempt)
+            }
+            if (connected) {
                 startAudioPipeline(peer)
-            }.onFailure { err ->
-                Timber.e(err, "RFCOMM connect failed after CALL_ACCEPT")
+            } else {
+                Timber.e("RFCOMM connect failed after 3 attempts")
                 _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
                 resetToIdle()
             }
@@ -369,7 +387,12 @@ class BluetoothCallService : LifecycleService() {
 
     private fun startAudioPipeline(peer: PeerDevice) {
         callStartTimestamp = System.currentTimeMillis()
+        lastHeartbeatMs = System.currentTimeMillis()
         _callState.value = CallState.Connected(peer)
+
+        // Route audio through earpiece/speakerphone optimised for voice calls
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        audioManager.isSpeakerphoneOn = true
 
         lifecycleScope.launch {
             audioRepository.startPlayback()
@@ -405,33 +428,26 @@ class BluetoothCallService : LifecycleService() {
             }
         }
 
-        // Heartbeat sender
-        heartbeatJob = lifecycleScope.launch {
-            while (true) {
-                delay(HEARTBEAT_INTERVAL_MS)
-                val current = _callState.value
-                if (current !is CallState.Connected) break
-                val hb = SignalMessage(
-                    type = SignalMessage.MessageType.HEARTBEAT,
-                    senderId = bluetoothRepository.getLocalDeviceId(),
-                    senderName = "",
-                    senderMac = ""
-                )
-                bluetoothRepository.sendSignal(current.remotePeer, hb)
-
-                // Check if remote is still alive
-                if (lastHeartbeatMs > 0) {
-                    val missedMs = System.currentTimeMillis() - lastHeartbeatMs
-                    if (missedMs > HEARTBEAT_INTERVAL_MS * BleConstants.HEARTBEAT_MISS_THRESHOLD) {
-                        Timber.w("Heartbeat timeout — remote disconnected")
-                        endCallInternal(current.remotePeer, EndReason.CONNECTION_LOST, sendSignal = false)
-                        break
-                    }
-                }
+        // Observe RFCOMM connection — end call immediately when socket drops
+        rfcommDisconnectJob = lifecycleScope.launch {
+            bluetoothRepository.rfcommConnected
+                .filter { connected -> !connected }
+                .first()
+            val current = _callState.value
+            if (current is CallState.Connected) {
+                Timber.w("RFCOMM socket dropped — ending call")
+                endCallInternal(current.remotePeer, EndReason.CONNECTION_LOST, sendSignal = false)
             }
         }
 
         updateNotification("In call with ${peer.displayName}")
+    }
+
+    fun setSpeakerphone(on: Boolean) {
+        audioManager.isSpeakerphoneOn = on
+        _callState.update { state ->
+            if (state is CallState.Connected) state.copy(isSpeakerOn = on) else state
+        }
     }
 
     private suspend fun endCallInternal(
@@ -443,6 +459,11 @@ class BluetoothCallService : LifecycleService() {
         audioReceiveJob?.cancel()
         callTimerJob?.cancel()
         heartbeatJob?.cancel()
+        rfcommDisconnectJob?.cancel()
+
+        // Restore normal audio mode
+        audioManager.isSpeakerphoneOn = false
+        audioManager.mode = AudioManager.MODE_NORMAL
 
         endCallUseCase(peer, currentDirection, callStartTimestamp, reason, sendSignal)
         _callState.value = CallState.Ended(reason)

@@ -29,6 +29,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- ========== BACKGROUND AUTO-START ========== -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <!-- Require BLE hardware -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
@@ -72,6 +75,18 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|microphone" />
+
+        <!-- Boot Receiver: auto-starts the service after device reboot or app update -->
+        <receiver
+            android:name=".data.bluetooth.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

@@ -70,15 +70,29 @@ class BluetoothRepositoryImpl @Inject constructor(
 
     override val incomingSignals: Flow<SignalMessage> = gattServer.incomingSignals
     override val incomingAudioData: Flow<ByteArray> = rfcommManager.incomingData
+    override val rfcommConnected: Flow<Boolean> = rfcommManager.rfcommConnected
 
     private val gattClient = GattClient(context)
 
-    // Periodically evict stale peers
+    // Periodically evict stale peers and restart scan to avoid Android throttling
     init {
         scope.launch {
             while (true) {
                 delay(3_000L)
                 evictStalePeers()
+            }
+        }
+        // Android throttles BLE scans that run for >30s. Restart every 25s.
+        scope.launch {
+            while (true) {
+                delay(25_000L)
+                if (scanJob?.isActive == true) {
+                    Timber.d("Rotating BLE scan to avoid Android throttle")
+                    scanJob?.cancel()
+                    scanJob = bleScanner.scanFlow()
+                        .onEach { peer -> onPeerDiscovered(peer) }
+                        .launchIn(scope)
+                }
             }
         }
         // Start GATT server immediately

@@ -14,6 +14,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -52,6 +53,10 @@ class RfcommManager @Inject constructor(@ApplicationContext private val context:
     // SharedFlow never closes — survives disconnect/reconnect across multiple calls.
     private val _incomingData = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
     val incomingData: Flow<ByteArray> = _incomingData.asSharedFlow()
+
+    // True while an RFCOMM socket is connected and the read loop is alive.
+    private val _isRfcommConnected = MutableStateFlow(false)
+    val rfcommConnected: Flow<Boolean> = _isRfcommConnected
 
     private val adapter: BluetoothAdapter? by lazy {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
@@ -96,6 +101,7 @@ class RfcommManager @Inject constructor(@ApplicationContext private val context:
         }
 
         Timber.d("RFCOMM: client connected from ${safeAddress(clientSocket?.remoteDevice)}")
+        _isRfcommConnected.value = true
         startReading()
     }
 
@@ -134,6 +140,7 @@ class RfcommManager @Inject constructor(@ApplicationContext private val context:
         }
 
         clientSocket = socket
+        _isRfcommConnected.value = true
         Timber.d("RFCOMM: connected to ${safeAddress(device)}")
         startReading()
     }
@@ -210,9 +217,9 @@ class RfcommManager @Inject constructor(@ApplicationContext private val context:
                     _incomingData.tryEmit(payload)
                 }
             } catch (e: IOException) {
-                Timber.e(e, "RFCOMM read loop ended")
-                // Do NOT close — SharedFlow is reused across multiple calls.
-                // BluetoothCallService will detect the disconnect via heartbeat timeout.
+                Timber.e(e, "RFCOMM read loop ended: ${e.message}")
+                // Signal disconnect so the service can end the call cleanly.
+                _isRfcommConnected.value = false
             }
         }
     }
@@ -220,6 +227,7 @@ class RfcommManager @Inject constructor(@ApplicationContext private val context:
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
     fun disconnect() {
+        _isRfcommConnected.value = false
         readJob?.cancel()
         readJob = null
 

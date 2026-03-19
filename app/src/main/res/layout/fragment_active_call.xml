@@ -141,6 +141,34 @@
                 android:textSize="13sp" />
         </LinearLayout>
 
+        <!-- Speaker button -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginStart="40dp">
+
+            <ImageButton
+                android:id="@+id/btn_speaker"
+                android:layout_width="60dp"
+                android:layout_height="60dp"
+                android:src="@drawable/ic_speaker_on"
+                android:tint="@color/white"
+                android:background="@drawable/bg_control_button"
+                android:padding="16dp"
+                android:contentDescription="Speaker" />
+
+            <TextView
+                android:id="@+id/tv_speaker_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Speaker"
+                android:textColor="#AAFFFFFF"
+                android:textSize="13sp" />
+        </LinearLayout>
+
     </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

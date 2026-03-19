@@ -68,6 +68,11 @@ class BleScanner @Inject constructor(
             }
 
             override fun onScanFailed(errorCode: Int) {
+                if (errorCode == ScanCallback.SCAN_FAILED_ALREADY_STARTED) {
+                    // Scan is already running — not a real failure, just continue
+                    Timber.d("BLE scan already started, continuing")
+                    return
+                }
                 Timber.e("BLE scan failed: errorCode=$errorCode")
                 close(IllegalStateException("BLE scan failed: errorCode=$errorCode"))
             }
