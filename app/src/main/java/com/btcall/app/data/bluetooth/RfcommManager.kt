@@ -12,9 +12,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -48,9 +48,10 @@ class RfcommManager @Inject constructor(@ApplicationContext private val context:
     private var clientSocket: BluetoothSocket? = null
     private var readJob: Job? = null
 
-    // Raw bytes received from the remote peer (contains [AudioPacket] frames)
-    private val _incomingData = Channel<ByteArray>(capacity = Channel.BUFFERED)
-    val incomingData: Flow<ByteArray> = _incomingData.receiveAsFlow()
+    // Raw bytes received from the remote peer (contains [AudioPacket] frames).
+    // SharedFlow never closes — survives disconnect/reconnect across multiple calls.
+    private val _incomingData = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
+    val incomingData: Flow<ByteArray> = _incomingData.asSharedFlow()
 
     private val adapter: BluetoothAdapter? by lazy {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
@@ -206,12 +207,12 @@ class RfcommManager @Inject constructor(@ApplicationContext private val context:
                         bytesRead += n
                     }
 
-                    _incomingData.trySend(payload)
+                    _incomingData.tryEmit(payload)
                 }
             } catch (e: IOException) {
                 Timber.e(e, "RFCOMM read loop ended")
-                // Signal disconnection — ViewModel will handle state transition
-                _incomingData.close(e)
+                // Do NOT close — SharedFlow is reused across multiple calls.
+                // BluetoothCallService will detect the disconnect via heartbeat timeout.
             }
         }
     }

@@ -277,25 +277,43 @@ class BluetoothCallService : LifecycleService() {
     /**
      * Accepts an incoming call while in RINGING state.
      * Opens RFCOMM server socket and starts audio pipeline.
+     *
+     * Order matters: RFCOMM server socket must be open BEFORE we send CALL_ACCEPT,
+     * otherwise the caller may attempt to connect before we are listening.
      */
     fun acceptCall(callerPeer: PeerDevice) {
         if (_callState.value !is CallState.Ringing) return
         callTimeoutJob?.cancel()
 
         lifecycleScope.launch {
+            // Step 1: Start accepting RFCOMM connections in the background so
+            // the server socket is bound before the caller gets CALL_ACCEPT.
+            val rfcommJob = launch {
+                bluetoothRepository.acceptRfcomm().onSuccess {
+                    startAudioPipeline(callerPeer)
+                }.onFailure { err ->
+                    Timber.e(err, "RFCOMM accept failed")
+                    if (_callState.value !is CallState.Connected) {
+                        _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
+                        resetToIdle()
+                    }
+                }
+            }
+
+            // Step 2: Give the server socket a moment to bind, then notify caller.
+            delay(400)
+
+            // Step 3: Send CALL_ACCEPT — caller will now connect RFCOMM.
             val acceptMsg = SignalMessage(
                 type = SignalMessage.MessageType.CALL_ACCEPT,
                 senderId = bluetoothRepository.getLocalDeviceId(),
                 senderName = bluetoothRepository.getLocalDeviceName(),
                 senderMac = ""
             )
-            bluetoothRepository.sendSignal(callerPeer, acceptMsg)
-
-            // Wait for caller to connect RFCOMM
-            bluetoothRepository.acceptRfcomm().onSuccess {
-                startAudioPipeline(callerPeer)
-            }.onFailure { err ->
-                Timber.e(err, "RFCOMM accept failed")
+            val signalResult = bluetoothRepository.sendSignal(callerPeer, acceptMsg)
+            if (signalResult.isFailure) {
+                Timber.e(signalResult.exceptionOrNull(), "Failed to send CALL_ACCEPT")
+                rfcommJob.cancel()
                 _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
                 resetToIdle()
             }

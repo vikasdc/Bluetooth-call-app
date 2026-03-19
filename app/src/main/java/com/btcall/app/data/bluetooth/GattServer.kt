@@ -82,8 +82,13 @@ class GattServer @Inject constructor(
             if (characteristic.uuid == BleConstants.SIGNAL_CHARACTERISTIC_UUID) {
                 val msg = SignalMessage.fromBytes(value)
                 if (msg != null) {
-                    Timber.d("GATT received signal: ${msg.type} from ${msg.senderId.take(8)}")
-                    _incomingSignals.trySend(msg)
+                    // Override senderMac with the actual Bluetooth device address from the
+                    // GATT connection. The caller cannot know its own MAC (randomized on
+                    // Android 6+), but we can capture it here from the connection object.
+                    val actualMac = try { device.address } catch (_: SecurityException) { msg.senderMac }
+                    val msgWithMac = msg.copy(senderMac = actualMac)
+                    Timber.d("GATT received signal: ${msgWithMac.type} from ${msgWithMac.senderId.take(8)} mac=$actualMac")
+                    _incomingSignals.trySend(msgWithMac)
                 } else {
                     Timber.w("GATT received unrecognised signal payload")
                 }

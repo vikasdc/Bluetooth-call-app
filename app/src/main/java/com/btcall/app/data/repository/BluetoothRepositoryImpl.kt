@@ -55,8 +55,12 @@ class BluetoothRepositoryImpl @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // Map of deviceId → (PeerDevice, lastSeenMs)
-    private val peerMap = mutableMapOf<String, Pair<PeerDevice, Long>>()
+    // Active scan coroutine — cancelled before each new scan starts
+    private var scanJob: Job? = null
+
+    // Map of deviceId → (PeerDevice, lastSeenMs). ConcurrentHashMap for thread safety
+    // (scan callbacks arrive on IO dispatcher, eviction on a separate coroutine).
+    private val peerMap = java.util.concurrent.ConcurrentHashMap<String, Pair<PeerDevice, Long>>()
     private val _nearbyDevices = MutableStateFlow<List<PeerDevice>>(emptyList())
     override val nearbyDevices: Flow<List<PeerDevice>> = _nearbyDevices.asStateFlow()
 
@@ -93,16 +97,18 @@ class BluetoothRepositoryImpl @Inject constructor(
     override fun stopAdvertising() = bleAdvertiser.stopAdvertising()
 
     override suspend fun startDiscovery(): Result<Unit> {
+        scanJob?.cancel()  // Stop any existing scan before starting a new one
         _isScanning.value = true
-        bleScanner.scanFlow()
+        scanJob = bleScanner.scanFlow()
             .onEach { peer -> onPeerDiscovered(peer) }
             .launchIn(scope)
         return Result.success(Unit)
     }
 
     override fun stopDiscovery() {
+        scanJob?.cancel()
+        scanJob = null
         _isScanning.value = false
-        // The scan flow auto-cancels when its coroutine is cancelled
     }
 
     private fun onPeerDiscovered(peer: PeerDevice) {

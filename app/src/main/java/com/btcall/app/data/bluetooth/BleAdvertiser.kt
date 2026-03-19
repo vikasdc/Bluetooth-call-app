@@ -70,34 +70,33 @@ class BleAdvertiser @Inject constructor(
         }
 
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(
-                if (lowPower) AdvertiseSettings.ADVERTISE_MODE_LOW_POWER
-                else AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
-            )
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(true)          // Must be connectable for GATT server
             .setTimeout(0)                 // Advertise indefinitely
             .build()
 
-        // Build manufacturer data: first 2 bytes = our device UUID prefix
-        // This allows scanners to extract device ID from advertisement packet
+        // Build manufacturer data: full 16-byte device UUID so scanners can
+        // deduplicate peers even when BLE MAC address is randomized (Android 6+).
+        // UUID string is 32 hex chars (after stripping hyphens) → 16 bytes.
         val deviceIdBytes = deviceIdProvider.getDeviceId()
             .replace("-", "")
-            .take(16)
+            .take(32)                       // All 32 hex chars = 16 bytes
             .chunked(2)
             .map { it.toInt(16).toByte() }
             .toByteArray()
 
+        // Keep advertise data small (≤31 bytes): flags(3)+UUID(4)+mfr(20)=27 bytes.
+        // Device name goes in scan response (separate 31-byte budget).
         val advertiseData = AdvertiseData.Builder()
             .addServiceUuid(ParcelUuid(BleConstants.SERVICE_UUID))
             .addManufacturerData(BleConstants.MANUFACTURER_ID, deviceIdBytes)
-            .setIncludeDeviceName(true)    // Broadcast Bluetooth device name
+            .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
             .build()
 
         val scanResponseData = AdvertiseData.Builder()
-            .addServiceUuid(ParcelUuid(BleConstants.SERVICE_UUID))
-            .setIncludeDeviceName(true)
+            .setIncludeDeviceName(true)    // Broadcast Bluetooth device name
             .build()
 
         try {
