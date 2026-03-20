@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -93,7 +94,7 @@ class WifiDirectManager @Inject constructor(
             })
         }
 
-    private fun doCreateGroup(cont: kotlin.coroutines.Continuation<Result<Pair<String, String>>>) {
+    private fun doCreateGroup(cont: CancellableContinuation<Result<Pair<String, String>>>) {
         wifiP2pManager.createGroup(p2pChannel, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 wifiP2pManager.requestGroupInfo(p2pChannel) { group ->
