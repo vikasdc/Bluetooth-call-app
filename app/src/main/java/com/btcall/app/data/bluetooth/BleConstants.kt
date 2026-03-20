@@ -41,15 +41,12 @@ object BleConstants {
     /** How long a device stays in the peer list without a fresh scan result */
     const val PEER_EXPIRY_MS = 15_000L
 
-    /** RFCOMM service UUID — must match on both sides */
-    val RFCOMM_UUID: UUID = UUID.fromString("0000A2B6-0000-1000-8000-00805F9B34FB")
-
-    /** RFCOMM channel timeout */
-    const val RFCOMM_CONNECT_TIMEOUT_MS = 10_000L
-
     /** Heartbeat interval to detect dropped connections */
     const val HEARTBEAT_INTERVAL_MS = 5_000L
 
     /** How many missed heartbeats before declaring connection lost */
     const val HEARTBEAT_MISS_THRESHOLD = 3
+
+    /** TCP port used for WiFi Direct audio streaming */
+    const val WIFI_DIRECT_AUDIO_PORT = 50007
 }

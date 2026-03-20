@@ -33,12 +33,23 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- ========== WIFI DIRECT (audio transport) ========== -->
+    <!-- WifiP2pManager.createGroup / connect / requestGroupInfo -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- ConnectivityManager.requestNetwork via WifiNetworkSpecifier -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <!-- TCP sockets over WiFi Direct require INTERNET permission -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- ========== BACKGROUND AUTO-START ========== -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- Require BLE hardware -->
+    <!-- Require BLE + WiFi Direct hardware -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
+    <uses-feature android:name="android.hardware.wifi" android:required="true" />
 
     <application
         android:name=".BTCallApplication"

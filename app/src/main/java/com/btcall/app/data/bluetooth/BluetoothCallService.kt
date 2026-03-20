@@ -34,7 +34,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -46,23 +45,23 @@ import javax.inject.Inject
 /**
  * Foreground service that owns the Bluetooth call lifecycle.
  *
- * Responsibilities:
- * - Keeps BLE advertising and scanning alive (even with app in background)
- * - Receives incoming signaling messages and drives call state machine
- * - Manages RFCOMM audio pipeline (start/stop capture + playback)
- * - Emits [callState] to ViewModels via bound service interface
- * - Shows persistent notification during active call
+ * Transport architecture (article-inspired mesh approach):
+ *   BLE         → peer discovery + call signaling (CALL_REQUEST / CALL_ACCEPT / …)
+ *   WiFi Direct → audio streaming over TCP socket (replaces broken RFCOMM)
+ *
+ * Why this fixes the 3-second audio cutout:
+ *   BLE lives on the Bluetooth chip; WiFi Direct lives on the WiFi chip.
+ *   They use completely separate radios, so there is zero 2.4GHz contention.
  *
  * State Machine:
- * IDLE → [receive CALL_REQUEST] → RINGING
- * IDLE → [user initiates call] → CALLING
- * CALLING → [receive CALL_ACCEPT] → CONNECTED
- * CALLING → [receive CALL_REJECT] → ENDED → IDLE
- * CALLING → [receive CALL_BUSY]   → ENDED → IDLE
- * RINGING → [user accepts]        → CONNECTED
- * RINGING → [user rejects]        → IDLE
- * CONNECTED → [receive CALL_END]  → ENDED → IDLE
- * CONNECTED → [user hangs up]     → ENDED → IDLE
+ * IDLE → [CALL_REQUEST received]   → RINGING
+ * IDLE → [user initiates]          → CALLING
+ * CALLING → [CALL_ACCEPT received] → CONNECTED
+ * CALLING → [CALL_REJECT/BUSY]     → ENDED → IDLE
+ * RINGING → [user accepts]         → CONNECTED
+ * RINGING → [user rejects]         → IDLE
+ * CONNECTED → [CALL_END received]  → ENDED → IDLE
+ * CONNECTED → [user hangs up]      → ENDED → IDLE
  */
 @AndroidEntryPoint
 class BluetoothCallService : LifecycleService() {
@@ -91,7 +90,7 @@ class BluetoothCallService : LifecycleService() {
     private var audioSendJob: Job? = null
     private var audioReceiveJob: Job? = null
     private var callTimeoutJob: Job? = null
-    private var rfcommDisconnectJob: Job? = null
+    private var audioDisconnectJob: Job? = null
     private var currentDirection = CallDirection.INCOMING
 
     private val audioManager: AudioManager by lazy {
@@ -112,7 +111,6 @@ class BluetoothCallService : LifecycleService() {
         startForeground(NOTIFICATION_ID, buildIdleNotification())
         startBluetoothStack()
         observeIncomingSignals()
-        observeIncomingAudio()
         Timber.d("BluetoothCallService created")
     }
 
@@ -134,7 +132,7 @@ class BluetoothCallService : LifecycleService() {
         bluetoothRepository.stopAdvertising()
         audioRepository.stopCapture()
         audioRepository.stopPlayback()
-        bluetoothRepository.disconnectRfcomm()
+        bluetoothRepository.disconnectAudio()
         Timber.d("BluetoothCallService destroyed")
     }
 
@@ -151,14 +149,14 @@ class BluetoothCallService : LifecycleService() {
 
     private fun observeIncomingSignals() {
         bluetoothRepository.incomingSignals.onEach { msg ->
-            Timber.d("Service received signal: ${msg.type} from ${msg.senderId.take(8)}")
+            Timber.d("Signal: ${msg.type} from ${msg.senderId.take(8)}")
             when (msg.type) {
                 SignalMessage.MessageType.CALL_REQUEST -> handleCallRequest(msg)
                 SignalMessage.MessageType.CALL_ACCEPT  -> handleCallAccept(msg)
-                SignalMessage.MessageType.CALL_REJECT  -> handleCallReject(msg)
-                SignalMessage.MessageType.CALL_BUSY    -> handleCallBusy(msg)
-                SignalMessage.MessageType.CALL_END     -> handleCallEnd(msg)
-                SignalMessage.MessageType.HEARTBEAT    -> handleHeartbeat(msg)
+                SignalMessage.MessageType.CALL_REJECT  -> handleCallReject()
+                SignalMessage.MessageType.CALL_BUSY    -> handleCallBusy()
+                SignalMessage.MessageType.CALL_END     -> handleCallEnd()
+                SignalMessage.MessageType.HEARTBEAT    -> lastHeartbeatMs = System.currentTimeMillis()
             }
         }.launchIn(lifecycleScope)
     }
@@ -166,16 +164,14 @@ class BluetoothCallService : LifecycleService() {
     private fun handleCallRequest(msg: SignalMessage) {
         val current = _callState.value
         if (current !is CallState.Idle) {
-            // We're busy — send CALL_BUSY back
             lifecycleScope.launch {
-                val peer = PeerDevice(msg.senderId, msg.senderName, msg.senderMac, 0)
-                val busyMsg = SignalMessage(
-                    type = SignalMessage.MessageType.CALL_BUSY,
-                    senderId = bluetoothRepository.getLocalDeviceId(),
-                    senderName = "",
-                    senderMac = ""
+                bluetoothRepository.sendSignal(
+                    PeerDevice(msg.senderId, msg.senderName, msg.senderMac, 0),
+                    SignalMessage(
+                        type = SignalMessage.MessageType.CALL_BUSY,
+                        senderId = bluetoothRepository.getLocalDeviceId()
+                    )
                 )
-                bluetoothRepository.sendSignal(peer, busyMsg)
             }
             return
         }
@@ -183,12 +179,8 @@ class BluetoothCallService : LifecycleService() {
         val callerPeer = PeerDevice(msg.senderId, msg.senderName, msg.senderMac, -50)
         _callState.value = CallState.Ringing(callerPeer)
         currentDirection = CallDirection.INCOMING
-
         startRingtone()
 
-        // Show incoming call over lock screen using a full-screen intent notification.
-        // On Android 10+ startActivity() from a background service is blocked; the
-        // full-screen notification approach is the correct replacement.
         val incomingIntent = Intent(this, IncomingCallActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(IncomingCallActivity.EXTRA_CALLER_ID, callerPeer.deviceId)
@@ -199,20 +191,20 @@ class BluetoothCallService : LifecycleService() {
             this, INCOMING_CALL_NOTIFICATION_ID, incomingIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val incomingNotification = NotificationCompat.Builder(this, INCOMING_CALL_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_bluetooth)
-            .setContentTitle("Incoming Call")
-            .setContentText("${callerPeer.displayName} is calling…")
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setFullScreenIntent(fullScreenPi, true)
-            .setAutoCancel(false)
-            .setOngoing(true)
-            .build()
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(INCOMING_CALL_NOTIFICATION_ID, incomingNotification)
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(
+            INCOMING_CALL_NOTIFICATION_ID,
+            NotificationCompat.Builder(this, INCOMING_CALL_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_bluetooth)
+                .setContentTitle("Incoming Call")
+                .setContentText("${callerPeer.displayName} is calling…")
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setFullScreenIntent(fullScreenPi, true)
+                .setAutoCancel(false)
+                .setOngoing(true)
+                .build()
+        )
 
-        // Auto-reject if not answered within timeout
         callTimeoutJob?.cancel()
         callTimeoutJob = lifecycleScope.launch {
             delay(CALL_REQUEST_TIMEOUT_MS)
@@ -224,6 +216,14 @@ class BluetoothCallService : LifecycleService() {
         }
     }
 
+    /**
+     * Caller side: received CALL_ACCEPT carrying WiFi Direct credentials.
+     *
+     * 1. Stop BLE scan/advertising (saves battery; not needed during call)
+     * 2. Join callee's WiFi Direct group via WifiNetworkSpecifier
+     * 3. TCP-connect to callee's audio server (Group Owner IP = 192.168.49.1)
+     * 4. Start audio pipeline
+     */
     private fun handleCallAccept(msg: SignalMessage) {
         val current = _callState.value
         if (current !is CallState.Calling) return
@@ -233,35 +233,42 @@ class BluetoothCallService : LifecycleService() {
         val peer = current.remotePeer
 
         lifecycleScope.launch {
-            // RFCOMM connect with retries.
-            // BT Classic ACL establishment can take 3-10s on first connect.
-            // Also cancel BLE discovery first — it interferes with the ACL setup on 2.4GHz.
             bluetoothRepository.stopDiscovery()
             bluetoothRepository.stopAdvertising()
 
-            var connected = false
-            for (attempt in 1..5) {
-                Timber.d("RFCOMM connect attempt $attempt/5")
-                val result = bluetoothRepository.connectRfcomm(peer)
-                if (result.isSuccess) {
-                    connected = true
-                    break
-                }
-                Timber.w("RFCOMM connect attempt $attempt failed: ${result.exceptionOrNull()?.message}")
-                if (attempt < 5) delay(3_000L)  // 3s between attempts — gives BT stack time to recover
+            val ssid = msg.wifiSsid
+            val pass = msg.wifiPassphrase
+
+            if (ssid.isBlank() || pass.isBlank()) {
+                Timber.e("CALL_ACCEPT missing WiFi Direct credentials")
+                _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
+                resetToIdle()
+                return@launch
             }
-            if (connected) {
+
+            Timber.d("Joining WiFi Direct group SSID=$ssid")
+            val joinResult = bluetoothRepository.connectToAudioGroup(ssid, pass)
+            if (joinResult.isFailure) {
+                Timber.e(joinResult.exceptionOrNull(), "Failed to join WiFi Direct group")
+                startBluetoothStack()
+                _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
+                resetToIdle()
+                return@launch
+            }
+
+            val socketResult = bluetoothRepository.connectAudioSocket()
+            if (socketResult.isSuccess) {
                 startAudioPipeline(peer)
             } else {
-                Timber.e("RFCOMM connect failed after 5 attempts")
-                startBluetoothStack()  // Resume BLE since we never reached startAudioPipeline
+                Timber.e(socketResult.exceptionOrNull(), "TCP audio connect failed")
+                startBluetoothStack()
                 _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
                 resetToIdle()
             }
         }
     }
 
-    private fun handleCallReject(msg: SignalMessage) {
+    private fun handleCallReject() {
         if (_callState.value !is CallState.Calling) return
         callTimeoutJob?.cancel()
         stopRingbackTone()
@@ -269,7 +276,7 @@ class BluetoothCallService : LifecycleService() {
         resetToIdle()
     }
 
-    private fun handleCallBusy(msg: SignalMessage) {
+    private fun handleCallBusy() {
         if (_callState.value !is CallState.Calling) return
         callTimeoutJob?.cancel()
         stopRingbackTone()
@@ -277,7 +284,7 @@ class BluetoothCallService : LifecycleService() {
         resetToIdle()
     }
 
-    private fun handleCallEnd(msg: SignalMessage) {
+    private fun handleCallEnd() {
         val current = _callState.value
         when (current) {
             is CallState.Connected -> {
@@ -286,7 +293,6 @@ class BluetoothCallService : LifecycleService() {
                 }
             }
             is CallState.Ringing -> {
-                // Caller hung up while we were ringing
                 callTimeoutJob?.cancel()
                 cancelIncomingCallNotification()
                 stopRingtone()
@@ -294,7 +300,6 @@ class BluetoothCallService : LifecycleService() {
                 resetToIdle()
             }
             is CallState.Calling -> {
-                // Remote ended while we were calling
                 callTimeoutJob?.cancel()
                 stopRingbackTone()
                 _callState.value = CallState.Ended(EndReason.REMOTE_HANGUP)
@@ -304,11 +309,6 @@ class BluetoothCallService : LifecycleService() {
         }
     }
 
-    private fun handleHeartbeat(msg: SignalMessage) {
-        // Reset heartbeat miss counter — connection is alive
-        lastHeartbeatMs = System.currentTimeMillis()
-    }
-
     private var lastHeartbeatMs = 0L
     private var incomingRingtone: Ringtone? = null
     private var ringbackTone: ToneGenerator? = null
@@ -316,35 +316,30 @@ class BluetoothCallService : LifecycleService() {
 
     // ── Call Actions (called by ViewModel) ────────────────────────────────
 
-    /**
-     * Initiates an outgoing call to [peer].
-     * Sends CALL_REQUEST via BLE GATT and transitions to CALLING state.
-     */
     fun initiateCall(peer: PeerDevice) {
         if (_callState.value !is CallState.Idle) {
             Timber.w("Cannot initiate: not in IDLE state")
             return
         }
-
         _callState.value = CallState.Calling(peer)
         currentDirection = CallDirection.OUTGOING
         startRingbackTone()
 
         lifecycleScope.launch {
-            val msg = SignalMessage(
-                type = SignalMessage.MessageType.CALL_REQUEST,
-                senderId = bluetoothRepository.getLocalDeviceId(),
-                senderName = bluetoothRepository.getLocalDeviceName(),
-                senderMac = ""
-            )
-            bluetoothRepository.sendSignal(peer, msg).onFailure { err ->
+            bluetoothRepository.sendSignal(
+                peer,
+                SignalMessage(
+                    type = SignalMessage.MessageType.CALL_REQUEST,
+                    senderId = bluetoothRepository.getLocalDeviceId(),
+                    senderName = bluetoothRepository.getLocalDeviceName()
+                )
+            ).onFailure { err ->
                 Timber.e(err, "Failed to send CALL_REQUEST")
                 stopRingbackTone()
                 _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
                 resetToIdle()
             }
 
-            // Timeout if no response
             callTimeoutJob?.cancel()
             callTimeoutJob = launch {
                 delay(CALL_REQUEST_TIMEOUT_MS)
@@ -358,11 +353,12 @@ class BluetoothCallService : LifecycleService() {
     }
 
     /**
-     * Accepts an incoming call while in RINGING state.
-     * Opens RFCOMM server socket and starts audio pipeline.
+     * Callee side: user accepts the incoming call.
      *
-     * Order matters: RFCOMM server socket must be open BEFORE we send CALL_ACCEPT,
-     * otherwise the caller may attempt to connect before we are listening.
+     * 1. Create WiFi Direct group → get (SSID, passphrase)
+     * 2. Open TCP ServerSocket in background
+     * 3. Send CALL_ACCEPT via BLE with SSID + passphrase embedded
+     * 4. When caller connects TCP → start audio pipeline
      */
     fun acceptCall(callerPeer: PeerDevice) {
         if (_callState.value !is CallState.Ringing) return
@@ -371,48 +367,57 @@ class BluetoothCallService : LifecycleService() {
         stopRingtone()
 
         lifecycleScope.launch {
-            // Stop BLE before opening RFCOMM — prevents 2.4GHz interference on callee side too
             bluetoothRepository.stopDiscovery()
             bluetoothRepository.stopAdvertising()
 
-            // Step 1: Start accepting RFCOMM connections in the background so
-            // the server socket is bound before the caller gets CALL_ACCEPT.
-            val rfcommJob = launch {
-                bluetoothRepository.acceptRfcomm().onSuccess {
+            // Step 1: Create WiFi Direct group
+            val groupResult = bluetoothRepository.createAudioGroup()
+            if (groupResult.isFailure) {
+                Timber.e(groupResult.exceptionOrNull(), "Failed to create WiFi Direct group")
+                startBluetoothStack()
+                _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
+                resetToIdle()
+                return@launch
+            }
+            val (ssid, passphrase) = groupResult.getOrThrow()
+            Timber.d("WiFi Direct group created SSID=$ssid")
+
+            // Step 2: Start TCP server concurrently — must be listening before caller gets CALL_ACCEPT
+            val tcpJob = launch {
+                bluetoothRepository.acceptAudioConnection().onSuccess {
                     startAudioPipeline(callerPeer)
                 }.onFailure { err ->
-                    Timber.e(err, "RFCOMM accept failed")
+                    Timber.e(err, "TCP audio accept failed")
                     if (_callState.value !is CallState.Connected) {
-                        startBluetoothStack()  // Resume BLE since audio never started
+                        startBluetoothStack()
                         _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
                         resetToIdle()
                     }
                 }
             }
 
-            // Step 2: Give the server socket a moment to bind, then notify caller.
-            delay(400)
-
-            // Step 3: Send CALL_ACCEPT — caller will now connect RFCOMM.
-            val acceptMsg = SignalMessage(
-                type = SignalMessage.MessageType.CALL_ACCEPT,
-                senderId = bluetoothRepository.getLocalDeviceId(),
-                senderName = bluetoothRepository.getLocalDeviceName(),
-                senderMac = ""
+            // Step 3: Give server socket time to bind, then notify caller
+            delay(300)
+            val signalResult = bluetoothRepository.sendSignal(
+                callerPeer,
+                SignalMessage(
+                    type = SignalMessage.MessageType.CALL_ACCEPT,
+                    senderId = bluetoothRepository.getLocalDeviceId(),
+                    senderName = bluetoothRepository.getLocalDeviceName(),
+                    wifiSsid = ssid,
+                    wifiPassphrase = passphrase
+                )
             )
-            val signalResult = bluetoothRepository.sendSignal(callerPeer, acceptMsg)
             if (signalResult.isFailure) {
                 Timber.e(signalResult.exceptionOrNull(), "Failed to send CALL_ACCEPT")
-                rfcommJob.cancel()
+                tcpJob.cancel()
+                bluetoothRepository.disconnectAudio()
                 _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
                 resetToIdle()
             }
         }
     }
 
-    /**
-     * Rejects an incoming call while in RINGING state.
-     */
     fun rejectCall(callerPeer: PeerDevice) {
         if (_callState.value !is CallState.Ringing) return
         callTimeoutJob?.cancel()
@@ -420,30 +425,25 @@ class BluetoothCallService : LifecycleService() {
         stopRingtone()
 
         lifecycleScope.launch {
-            val rejectMsg = SignalMessage(
-                type = SignalMessage.MessageType.CALL_REJECT,
-                senderId = bluetoothRepository.getLocalDeviceId(),
-                senderName = "",
-                senderMac = ""
+            bluetoothRepository.sendSignal(
+                callerPeer,
+                SignalMessage(
+                    type = SignalMessage.MessageType.CALL_REJECT,
+                    senderId = bluetoothRepository.getLocalDeviceId()
+                )
             )
-            bluetoothRepository.sendSignal(callerPeer, rejectMsg)
             _callState.value = CallState.Idle
         }
     }
 
-    /**
-     * Ends an active call.
-     */
     fun endCall() {
         val current = _callState.value
         if (current !is CallState.Connected && current !is CallState.Calling) return
-
         val peer = when (current) {
             is CallState.Connected -> current.remotePeer
             is CallState.Calling   -> current.remotePeer
             else -> return
         }
-
         callTimeoutJob?.cancel()
         stopRingbackTone()
         lifecycleScope.launch {
@@ -453,9 +453,12 @@ class BluetoothCallService : LifecycleService() {
 
     fun setMuted(muted: Boolean) {
         audioRepository.setMuted(muted)
-        _callState.update { state ->
-            if (state is CallState.Connected) state.copy(isMuted = muted) else state
-        }
+        _callState.update { if (it is CallState.Connected) it.copy(isMuted = muted) else it }
+    }
+
+    fun setSpeakerphone(on: Boolean) {
+        audioManager.isSpeakerphoneOn = on
+        _callState.update { if (it is CallState.Connected) it.copy(isSpeakerOn = on) else it }
     }
 
     // ── Audio Pipeline ────────────────────────────────────────────────────
@@ -465,35 +468,20 @@ class BluetoothCallService : LifecycleService() {
         lastHeartbeatMs = System.currentTimeMillis()
         _callState.value = CallState.Connected(peer)
 
-        // Route audio through earpiece/speakerphone optimised for voice calls
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         audioManager.isSpeakerphoneOn = true
 
-        // Acquire a partial wake lock so the CPU stays awake during the call.
-        // RFCOMM socket will drop if the CPU enters deep sleep.
         callWakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BTCall::CallWakeLock")
-            .also { it.acquire(30 * 60 * 1000L) } // 30-minute safety cap
+            .also { it.acquire(30 * 60 * 1000L) }
 
-        // Stop BLE scan and advertising for the duration of the call.
-        // SCAN_MODE_LOW_LATENCY aggressively sweeps 2.4GHz channels and directly
-        // interferes with Bluetooth Classic (RFCOMM) — this is the primary cause of
-        // audio dropping after a few seconds.
-        bluetoothRepository.stopDiscovery()
-        bluetoothRepository.stopAdvertising()
-
+        // Start audio capture + playback engines
         lifecycleScope.launch {
-            val playbackResult = audioRepository.startPlayback()
-            if (playbackResult.isFailure) {
-                Timber.e(playbackResult.exceptionOrNull(), "Audio playback failed to start")
-            }
-            val captureResult = audioRepository.startCapture()
-            if (captureResult.isFailure) {
-                Timber.e(captureResult.exceptionOrNull(), "Audio capture failed to start")
-            }
+            audioRepository.startPlayback().onFailure { Timber.e(it, "Playback start failed") }
+            audioRepository.startCapture().onFailure  { Timber.e(it, "Capture start failed") }
         }
 
-        // Send captured audio over RFCOMM — must run on IO to avoid blocking the main thread
+        // Send captured audio over WiFi Direct TCP socket
         audioSendJob = lifecycleScope.launch(Dispatchers.IO) {
             audioRepository.capturedAudioPackets.collect { packet ->
                 bluetoothRepository.sendAudioData(packet.toBytes())
@@ -501,13 +489,11 @@ class BluetoothCallService : LifecycleService() {
             }
         }
 
-        // Receive audio from RFCOMM and enqueue into jitter buffer — IO to avoid 20ms blocking
+        // Receive audio from WiFi Direct and enqueue into jitter buffer
         audioReceiveJob = lifecycleScope.launch(Dispatchers.IO) {
             bluetoothRepository.incomingAudioData.collect { bytes ->
                 val packet = AudioPacket.fromBytes(bytes)
-                if (packet != null) {
-                    audioRepository.enqueueForPlayback(packet)
-                }
+                if (packet != null) audioRepository.enqueueForPlayback(packet)
             }
         }
 
@@ -516,21 +502,19 @@ class BluetoothCallService : LifecycleService() {
             while (true) {
                 delay(1_000L)
                 val elapsed = (System.currentTimeMillis() - callStartTimestamp) / 1000L
-                _callState.update { state ->
-                    if (state is CallState.Connected) state.copy(durationSeconds = elapsed) else state
+                _callState.update { s ->
+                    if (s is CallState.Connected) s.copy(durationSeconds = elapsed) else s
                 }
             }
         }
 
-        // Observe RFCOMM connection — end call when socket drops.
-        // Two-step: first wait for confirmed true (avoids the race where the StateFlow
-        // still holds its initial false when this job launches), then wait for false.
-        rfcommDisconnectJob = lifecycleScope.launch {
-            bluetoothRepository.rfcommConnected.first { it }   // Wait for confirmed connected
-            bluetoothRepository.rfcommConnected.first { !it }  // Then detect drop
+        // Observe WiFi Direct socket health — end call on drop
+        audioDisconnectJob = lifecycleScope.launch {
+            bluetoothRepository.audioConnected.first { it }   // wait for confirmed live
+            bluetoothRepository.audioConnected.first { !it }  // detect drop
             val current = _callState.value
             if (current is CallState.Connected) {
-                Timber.w("RFCOMM socket dropped — ending call")
+                Timber.w("WiFi Direct audio socket dropped — ending call")
                 endCallInternal(current.remotePeer, EndReason.CONNECTION_LOST, sendSignal = false)
             }
         }
@@ -538,12 +522,7 @@ class BluetoothCallService : LifecycleService() {
         updateNotification("In call with ${peer.displayName}")
     }
 
-    fun setSpeakerphone(on: Boolean) {
-        audioManager.isSpeakerphoneOn = on
-        _callState.update { state ->
-            if (state is CallState.Connected) state.copy(isSpeakerOn = on) else state
-        }
-    }
+    // ── Call Teardown ─────────────────────────────────────────────────────
 
     private suspend fun endCallInternal(
         peer: PeerDevice,
@@ -554,22 +533,16 @@ class BluetoothCallService : LifecycleService() {
         audioReceiveJob?.cancel()
         callTimerJob?.cancel()
         heartbeatJob?.cancel()
-        rfcommDisconnectJob?.cancel()
+        audioDisconnectJob?.cancel()
         stopRingbackTone()
         stopRingtone()
 
-        // Release wake lock so the CPU can sleep again
-        if (callWakeLock?.isHeld == true) {
-            callWakeLock?.release()
-        }
+        if (callWakeLock?.isHeld == true) callWakeLock?.release()
         callWakeLock = null
 
-        // Restore normal audio mode
         audioManager.isSpeakerphoneOn = false
         audioManager.mode = AudioManager.MODE_NORMAL
 
-        // Update state BEFORE the potentially blocking signal send so the UI
-        // transitions immediately instead of freezing for up to 10 seconds.
         _callState.value = CallState.Ended(reason)
         endCallUseCase(peer, currentDirection, callStartTimestamp, reason, sendSignal)
         resetToIdle()
@@ -577,11 +550,9 @@ class BluetoothCallService : LifecycleService() {
 
     private fun resetToIdle() {
         lifecycleScope.launch {
-            delay(2_000L)  // Show ended state briefly
+            delay(2_000L)
             _callState.value = CallState.Idle
         }
-        // Restart BLE scan/advertising now that RFCOMM is done.
-        // Small delay to let RFCOMM teardown complete before re-activating 2.4GHz radio.
         lifecycleScope.launch {
             delay(1_000L)
             startBluetoothStack()
@@ -589,14 +560,14 @@ class BluetoothCallService : LifecycleService() {
         updateNotification("Ready")
     }
 
-    // ── Ringtone ──────────────────────────────────────────────────────────
+    // ── Ringtones ─────────────────────────────────────────────────────────
 
     private fun startRingtone() {
         stopRingtone()
         val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-        incomingRingtone = RingtoneManager.getRingtone(this, uri)?.also { ringtone ->
-            ringtone.isLooping = true
-            ringtone.play()
+        incomingRingtone = RingtoneManager.getRingtone(this, uri)?.also {
+            it.isLooping = true
+            it.play()
         }
     }
 
@@ -622,60 +593,45 @@ class BluetoothCallService : LifecycleService() {
     }
 
     private fun cancelIncomingCallNotification() {
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        nm.cancel(INCOMING_CALL_NOTIFICATION_ID)
-    }
-
-    private fun observeIncomingAudio() {
-        // Handled in startAudioPipeline's audioReceiveJob
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+            .cancel(INCOMING_CALL_NOTIFICATION_ID)
     }
 
     // ── Notifications ─────────────────────────────────────────────────────
 
     private fun createNotificationChannel() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-
-        // Persistent foreground service channel (low importance — no sound/heads-up)
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            CHANNEL_NAME,
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "Bluetooth call status"
-            setShowBadge(false)
-        }
-        nm.createNotificationChannel(channel)
-
-        // Incoming call channel — IMPORTANCE_HIGH is required for heads-up and full-screen intent
-        val incomingChannel = NotificationChannel(
-            INCOMING_CALL_CHANNEL_ID,
-            INCOMING_CALL_CHANNEL_NAME,
-            NotificationManager.IMPORTANCE_HIGH
-        ).apply {
-            description = "Incoming Bluetooth call alerts"
-            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-        }
-        nm.createNotificationChannel(incomingChannel)
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Bluetooth call status"; setShowBadge(false)
+            }
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(INCOMING_CALL_CHANNEL_ID, INCOMING_CALL_CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Incoming Bluetooth call alerts"
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
+        )
     }
 
-    private fun buildIdleNotification(): Notification {
-        val intent = Intent(this, MainActivity::class.java)
-        val pi = PendingIntent.getActivity(this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun buildIdleNotification(): Notification =
+        NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("BTCall")
             .setContentText("Discoverable — waiting for calls")
             .setSmallIcon(R.drawable.ic_bluetooth)
-            .setContentIntent(pi)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this, 0, Intent(this, MainActivity::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
-    }
 
     private fun updateNotification(status: String) {
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        val notification = buildIdleNotification().let {
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(
+            NOTIFICATION_ID,
             NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("BTCall")
                 .setContentText(status)
@@ -683,7 +639,6 @@ class BluetoothCallService : LifecycleService() {
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build()
-        }
-        nm.notify(NOTIFICATION_ID, notification)
+        )
     }
 }

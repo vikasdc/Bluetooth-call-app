@@ -9,7 +9,7 @@ import com.btcall.app.data.bluetooth.BleAdvertiser
 import com.btcall.app.data.bluetooth.BleScanner
 import com.btcall.app.data.bluetooth.DeviceIdProvider
 import com.btcall.app.data.bluetooth.GattServer
-import com.btcall.app.data.bluetooth.RfcommManager
+import com.btcall.app.data.wifi.WifiDirectManager
 import com.btcall.app.data.repository.AudioRepositoryImpl
 import com.btcall.app.data.repository.BluetoothRepositoryImpl
 import com.btcall.app.data.repository.CallHistoryRepositoryImpl

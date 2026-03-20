@@ -1,87 +1,78 @@
 package com.btcall.app.domain.repository
 
-import com.btcall.app.domain.model.CallState
 import com.btcall.app.domain.model.PeerDevice
 import com.btcall.app.domain.model.SignalMessage
 import kotlinx.coroutines.flow.Flow
 
 /**
- * Contract for all Bluetooth operations.
- * Implementations: BluetoothRepositoryImpl (BLE + RFCOMM).
+ * Contract for all Bluetooth + WiFi Direct operations.
+ *
+ * Transport architecture:
+ * - BLE  → peer discovery and call signaling
+ * - WiFi Direct → audio streaming (TCP socket over P2P group)
+ *
+ * Call setup sequence:
+ *  Callee: createAudioGroup() → share SSID+pass in CALL_ACCEPT → acceptAudioConnection()
+ *  Caller: connectToAudioGroup(ssid, pass) → connectAudioSocket()
  */
 interface BluetoothRepository {
 
-    // ── Discovery ──────────────────────────────────────────────────────────
+    // ── BLE Discovery ─────────────────────────────────────────────────────
 
-    /** Flow emitting the current list of visible nearby peers. */
     val nearbyDevices: Flow<List<PeerDevice>>
-
-    /** Whether BLE is currently scanning. */
     val isScanning: Flow<Boolean>
 
-    /** Start BLE advertising so other devices can see us. */
     suspend fun startAdvertising(): Result<Unit>
-
-    /** Stop BLE advertising. */
     fun stopAdvertising()
-
-    /** Start BLE scan for peers running this app. */
     suspend fun startDiscovery(): Result<Unit>
-
-    /** Stop BLE scan. */
     fun stopDiscovery()
 
-    // ── Signaling ──────────────────────────────────────────────────────────
+    // ── BLE Signaling ─────────────────────────────────────────────────────
 
-    /** Flow of inbound signaling messages (BLE GATT writes from peers). */
     val incomingSignals: Flow<SignalMessage>
-
-    /**
-     * Send a signaling message to a specific peer's GATT characteristic.
-     * Used for CALL_REQUEST, CALL_ACCEPT, CALL_REJECT, CALL_BUSY, CALL_END.
-     */
     suspend fun sendSignal(target: PeerDevice, message: SignalMessage): Result<Unit>
 
-    // ── RFCOMM Audio Channel ───────────────────────────────────────────────
+    // ── WiFi Direct Audio Transport ───────────────────────────────────────
 
     /**
-     * Connect an RFCOMM socket to the target device (caller connects TO callee).
-     * Blocks until connected or fails.
+     * Callee: create a WiFi Direct group and return (SSID, passphrase).
+     * Include the result in the CALL_ACCEPT BLE message.
      */
-    suspend fun connectRfcomm(target: PeerDevice): Result<Unit>
+    suspend fun createAudioGroup(): Result<Pair<String, String>>
 
     /**
-     * Accept an incoming RFCOMM connection (callee side).
-     * Blocks until a client connects or timeout.
+     * Callee: open a TCP server socket and block until the caller connects.
+     * Call this concurrently with sending CALL_ACCEPT.
      */
-    suspend fun acceptRfcomm(): Result<Unit>
+    suspend fun acceptAudioConnection(): Result<Unit>
 
     /**
-     * Send raw bytes over the established RFCOMM socket.
-     * @param data Audio packet bytes (see [AudioPacket.toBytes])
+     * Caller: join the callee's WiFi Direct group using credentials from CALL_ACCEPT.
      */
+    suspend fun connectToAudioGroup(ssid: String, passphrase: String): Result<Unit>
+
+    /**
+     * Caller: TCP-connect to the callee's audio server (Group Owner at 192.168.49.1).
+     * Call after [connectToAudioGroup] succeeds.
+     */
+    suspend fun connectAudioSocket(): Result<Unit>
+
+    /** Send raw audio packet bytes over the TCP audio socket. */
     suspend fun sendAudioData(data: ByteArray): Result<Unit>
 
-    /** Flow of raw byte arrays received over RFCOMM. */
+    /** Flow of raw audio packet bytes received from the remote peer. */
     val incomingAudioData: Flow<ByteArray>
 
-    /** True while an RFCOMM socket is open and the read loop is alive. */
-    val rfcommConnected: Flow<Boolean>
+    /** True while the TCP audio socket is alive. */
+    val audioConnected: Flow<Boolean>
 
-    /** Close the RFCOMM socket and free resources. */
-    fun disconnectRfcomm()
+    /** Tear down the audio socket and WiFi Direct group. */
+    fun disconnectAudio()
 
-    // ── State ──────────────────────────────────────────────────────────────
+    // ── Device Info ───────────────────────────────────────────────────────
 
-    /** Whether Bluetooth is enabled on this device. */
     fun isBluetoothEnabled(): Boolean
-
-    /** This device's unique stable ID (persisted across restarts). */
     fun getLocalDeviceId(): String
-
-    /** This device's display name. */
     fun getLocalDeviceName(): String
-
-    /** This device's Bluetooth MAC address. */
     fun getLocalMacAddress(): String
 }

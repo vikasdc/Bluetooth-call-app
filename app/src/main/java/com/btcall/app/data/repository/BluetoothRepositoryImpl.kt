@@ -3,17 +3,17 @@ package com.btcall.app.data.repository
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.Context
-import dagger.hilt.android.qualifiers.ApplicationContext
-import java.io.IOException
 import com.btcall.app.data.bluetooth.BleAdvertiser
 import com.btcall.app.data.bluetooth.BleScanner
 import com.btcall.app.data.bluetooth.DeviceIdProvider
 import com.btcall.app.data.bluetooth.GattClient
 import com.btcall.app.data.bluetooth.GattServer
-import com.btcall.app.data.bluetooth.RfcommManager
+import com.btcall.app.data.wifi.WifiDirectManager
 import com.btcall.app.domain.model.PeerDevice
 import com.btcall.app.domain.model.SignalMessage
 import com.btcall.app.domain.repository.BluetoothRepository
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -31,14 +31,10 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Concrete implementation of [BluetoothRepository].
+ * Concrete [BluetoothRepository].
  *
- * Manages the peer device list with automatic expiry:
- * - A peer is added/refreshed when a BLE scan result arrives
- * - A peer is removed if no scan result received within [PEER_EXPIRY_MS]
- *
- * Sends signaling messages via [GattClient] (connects to remote GATT server).
- * Receives signaling messages via [GattServer] (local GATT server callback).
+ * BLE layer  → peer discovery (BleScanner / BleAdvertiser) + signaling (GattServer / GattClient)
+ * WiFi layer → audio transport (WifiDirectManager — TCP over WiFi Direct)
  */
 @Singleton
 class BluetoothRepositoryImpl @Inject constructor(
@@ -46,7 +42,7 @@ class BluetoothRepositoryImpl @Inject constructor(
     private val bleAdvertiser: BleAdvertiser,
     private val bleScanner: BleScanner,
     private val gattServer: GattServer,
-    private val rfcommManager: RfcommManager,
+    private val wifiDirectManager: WifiDirectManager,
     private val deviceIdProvider: DeviceIdProvider
 ) : BluetoothRepository {
 
@@ -55,12 +51,8 @@ class BluetoothRepositoryImpl @Inject constructor(
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    // Active scan coroutine — cancelled before each new scan starts
     private var scanJob: Job? = null
 
-    // Map of deviceId → (PeerDevice, lastSeenMs). ConcurrentHashMap for thread safety
-    // (scan callbacks arrive on IO dispatcher, eviction on a separate coroutine).
     private val peerMap = java.util.concurrent.ConcurrentHashMap<String, Pair<PeerDevice, Long>>()
     private val _nearbyDevices = MutableStateFlow<List<PeerDevice>>(emptyList())
     override val nearbyDevices: Flow<List<PeerDevice>> = _nearbyDevices.asStateFlow()
@@ -69,25 +61,25 @@ class BluetoothRepositoryImpl @Inject constructor(
     override val isScanning: Flow<Boolean> = _isScanning.asStateFlow()
 
     override val incomingSignals: Flow<SignalMessage> = gattServer.incomingSignals
-    override val incomingAudioData: Flow<ByteArray> = rfcommManager.incomingData
-    override val rfcommConnected: Flow<Boolean> = rfcommManager.rfcommConnected
+    override val incomingAudioData: Flow<ByteArray>   = wifiDirectManager.incomingData
+    override val audioConnected: Flow<Boolean>        = wifiDirectManager.isConnected
 
     private val gattClient = GattClient(context)
 
-    // Periodically evict stale peers and restart scan to avoid Android throttling
     init {
+        // Periodically evict peers that have stopped advertising
         scope.launch {
             while (true) {
                 delay(3_000L)
                 evictStalePeers()
             }
         }
-        // Android throttles BLE scans that run for >30s. Restart every 25s.
+        // Rotate BLE scan every 25 s to avoid Android throttling
         scope.launch {
             while (true) {
                 delay(25_000L)
                 if (scanJob?.isActive == true) {
-                    Timber.d("Rotating BLE scan to avoid Android throttle")
+                    Timber.d("Rotating BLE scan")
                     scanJob?.cancel()
                     scanJob = bleScanner.scanFlow()
                         .onEach { peer -> onPeerDiscovered(peer) }
@@ -95,24 +87,19 @@ class BluetoothRepositoryImpl @Inject constructor(
                 }
             }
         }
-        // Start GATT server immediately
         gattServer.start()
     }
 
-    // ── Discovery ──────────────────────────────────────────────────────────
+    // ── BLE Discovery ─────────────────────────────────────────────────────
 
-    override suspend fun startAdvertising(): Result<Unit> {
-        return if (bleAdvertiser.startAdvertising(lowPower = true)) {
-            Result.success(Unit)
-        } else {
-            Result.failure(IllegalStateException("Failed to start BLE advertising"))
-        }
-    }
+    override suspend fun startAdvertising(): Result<Unit> =
+        if (bleAdvertiser.startAdvertising(lowPower = true)) Result.success(Unit)
+        else Result.failure(IllegalStateException("Failed to start BLE advertising"))
 
     override fun stopAdvertising() = bleAdvertiser.stopAdvertising()
 
     override suspend fun startDiscovery(): Result<Unit> {
-        scanJob?.cancel()  // Stop any existing scan before starting a new one
+        scanJob?.cancel()
         _isScanning.value = true
         scanJob = bleScanner.scanFlow()
             .onEach { peer -> onPeerDiscovered(peer) }
@@ -127,93 +114,60 @@ class BluetoothRepositoryImpl @Inject constructor(
     }
 
     private fun onPeerDiscovered(peer: PeerDevice) {
-        val now = System.currentTimeMillis()
-        peerMap[peer.deviceId] = Pair(peer, now)
+        peerMap[peer.deviceId] = Pair(peer, System.currentTimeMillis())
         publishPeerList()
     }
 
     private fun evictStalePeers() {
         val now = System.currentTimeMillis()
-        val staleKeys = peerMap.entries
-            .filter { (_, v) -> now - v.second > PEER_EXPIRY_MS }
-            .map { it.key }
-
-        if (staleKeys.isNotEmpty()) {
-            staleKeys.forEach { peerMap.remove(it) }
+        val stale = peerMap.entries.filter { (_, v) -> now - v.second > PEER_EXPIRY_MS }.map { it.key }
+        if (stale.isNotEmpty()) {
+            stale.forEach { peerMap.remove(it) }
             publishPeerList()
         }
     }
 
     private fun publishPeerList() {
-        _nearbyDevices.update {
-            peerMap.values
-                .map { it.first }
-                .sortedByDescending { it.rssi }  // Closest first
-        }
+        _nearbyDevices.update { peerMap.values.map { it.first }.sortedByDescending { it.rssi } }
     }
 
-    fun markPeerBusy(deviceId: String) {
-        peerMap[deviceId]?.let { (peer, ts) ->
-            peerMap[deviceId] = Pair(peer.copy(isAvailable = false), ts)
-            publishPeerList()
-        }
-    }
-
-    // ── Signaling ──────────────────────────────────────────────────────────
+    // ── BLE Signaling ─────────────────────────────────────────────────────
 
     override suspend fun sendSignal(target: PeerDevice, message: SignalMessage): Result<Unit> {
-        val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        val adapter = bluetoothManager.adapter
-
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
         val device: BluetoothDevice = try {
             adapter.getRemoteDevice(target.macAddress)
         } catch (e: Exception) {
             Timber.e(e, "Cannot get remote device: ${target.macAddress}")
             return Result.failure(e)
         }
-
-        val success = gattClient.sendSignal(device, message)
-        return if (success) {
-            Result.success(Unit)
-        } else {
-            Result.failure(IOException("GATT signal write failed"))
-        }
+        return if (gattClient.sendSignal(device, message)) Result.success(Unit)
+        else Result.failure(IOException("GATT signal write failed"))
     }
 
-    // ── RFCOMM ────────────────────────────────────────────────────────────
+    // ── WiFi Direct Audio Transport ───────────────────────────────────────
 
-    override suspend fun connectRfcomm(target: PeerDevice): Result<Unit> {
-        return try {
-            val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-            val device = bluetoothManager.adapter.getRemoteDevice(target.macAddress)
-            rfcommManager.connectToDevice(device)
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Timber.e(e, "RFCOMM connect failed to ${target.macAddress}")
-            Result.failure(e)
-        }
-    }
+    override suspend fun createAudioGroup(): Result<Pair<String, String>> =
+        wifiDirectManager.createGroupAndGetCredentials()
 
-    override suspend fun acceptRfcomm(): Result<Unit> {
-        return try {
-            rfcommManager.acceptConnection()
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Timber.e(e, "RFCOMM accept failed")
-            Result.failure(e)
-        }
-    }
+    override suspend fun acceptAudioConnection(): Result<Unit> =
+        wifiDirectManager.acceptAudioConnection()
 
-    override suspend fun sendAudioData(data: ByteArray): Result<Unit> {
-        return try {
-            rfcommManager.sendData(data)
+    override suspend fun connectToAudioGroup(ssid: String, passphrase: String): Result<Unit> =
+        wifiDirectManager.connectToGroup(ssid, passphrase)
+
+    override suspend fun connectAudioSocket(): Result<Unit> =
+        wifiDirectManager.connectAudioSocket()
+
+    override suspend fun sendAudioData(data: ByteArray): Result<Unit> =
+        try {
+            wifiDirectManager.sendData(data)
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
         }
-    }
 
-    override fun disconnectRfcomm() = rfcommManager.disconnect()
+    override fun disconnectAudio() = wifiDirectManager.disconnect()
 
     // ── Device Info ───────────────────────────────────────────────────────
 
@@ -226,17 +180,8 @@ class BluetoothRepositoryImpl @Inject constructor(
 
     override fun getLocalDeviceName(): String {
         val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        return try {
-            mgr.adapter?.name ?: android.os.Build.MODEL
-        } catch (e: SecurityException) {
-            android.os.Build.MODEL
-        }
+        return try { mgr.adapter?.name ?: android.os.Build.MODEL } catch (_: SecurityException) { android.os.Build.MODEL }
     }
 
-    override fun getLocalMacAddress(): String {
-        // On Android 6+, WifiInfo/BT MAC is randomised. We return an empty string here
-        // because the caller's GATT server address is known from the BLE connection.
-        return ""
-    }
+    override fun getLocalMacAddress(): String = ""
 }
-
