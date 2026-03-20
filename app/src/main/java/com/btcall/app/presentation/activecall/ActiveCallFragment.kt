@@ -71,7 +71,15 @@ class ActiveCallFragment : Fragment() {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.uiState.collect { state ->
                     binding.tvRemotePeerName.text = state.remotePeer?.displayName ?: "..."
-                    binding.tvCallDuration.text = viewModel.formatDuration(state.durationSeconds)
+                    binding.tvCallDuration.text = if (state.isConnecting) {
+                        "Calling…"
+                    } else {
+                        viewModel.formatDuration(state.durationSeconds)
+                    }
+
+                    // Mute/speaker controls only make sense once audio is flowing
+                    binding.btnMute.isEnabled = !state.isConnecting
+                    binding.btnSpeaker.isEnabled = !state.isConnecting
 
                     // Mute button icon update
                     binding.btnMute.setImageResource(

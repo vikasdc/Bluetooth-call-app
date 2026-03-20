@@ -131,7 +131,11 @@ class IncomingCallActivity : AppCompatActivity() {
     private fun acceptCall() {
         val peer = viewModel.uiState.value.callerPeer ?: return
         Timber.d("User accepted call from ${peer.displayName}")
-        viewModel.onDecisionMade()
+        // Disable buttons to prevent double-tap; do NOT call onDecisionMade() here —
+        // that would trigger finish() immediately and kill observeCallState() before it
+        // can detect Connected and navigate to MainActivity.
+        binding.btnAccept.isEnabled = false
+        binding.btnReject.isEnabled = false
         callService?.acceptCall(peer)
     }
 

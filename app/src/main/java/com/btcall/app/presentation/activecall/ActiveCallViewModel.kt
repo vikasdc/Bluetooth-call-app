@@ -25,7 +25,8 @@ class ActiveCallViewModel @Inject constructor() : ViewModel() {
         val isSpeakerOn: Boolean = true,
         val durationSeconds: Long = 0L,
         val connectionQuality: ConnectionQuality = ConnectionQuality.GOOD,
-        val isEnded: Boolean = false
+        val isEnded: Boolean = false,
+        val isConnecting: Boolean = false
     )
 
     enum class ConnectionQuality { EXCELLENT, GOOD, FAIR, POOR }
@@ -35,6 +36,15 @@ class ActiveCallViewModel @Inject constructor() : ViewModel() {
 
     fun updateFromCallState(state: CallState) {
         when (state) {
+            is CallState.Calling -> {
+                _uiState.update {
+                    it.copy(
+                        remotePeer = state.remotePeer,
+                        isConnecting = true,
+                        isEnded = false
+                    )
+                }
+            }
             is CallState.Connected -> {
                 _uiState.update {
                     it.copy(
@@ -42,6 +52,7 @@ class ActiveCallViewModel @Inject constructor() : ViewModel() {
                         isMuted = state.isMuted,
                         isSpeakerOn = state.isSpeakerOn,
                         durationSeconds = state.durationSeconds,
+                        isConnecting = false,
                         isEnded = false
                     )
                 }

@@ -150,8 +150,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleCallStateNavigation(state: CallState) {
         when (state) {
-            is CallState.Connected -> {
-                // Navigate to active call if not already there
+            is CallState.Calling, is CallState.Connected -> {
+                // Show in-call screen for both outgoing (Calling) and connected states
                 val current = supportFragmentManager.findFragmentById(R.id.fragment_container)
                 if (current !is ActiveCallFragment) {
                     supportFragmentManager.beginTransaction()

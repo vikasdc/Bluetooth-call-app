@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.media.AudioManager
+import android.media.Ringtone
+import android.media.RingtoneManager
 import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -174,6 +176,8 @@ class BluetoothCallService : LifecycleService() {
         _callState.value = CallState.Ringing(callerPeer)
         currentDirection = CallDirection.INCOMING
 
+        startRingtone()
+
         // Launch IncomingCallActivity over lock screen
         val incomingIntent = Intent(this, IncomingCallActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -188,6 +192,7 @@ class BluetoothCallService : LifecycleService() {
         callTimeoutJob = lifecycleScope.launch {
             delay(CALL_REQUEST_TIMEOUT_MS)
             if (_callState.value is CallState.Ringing) {
+                stopRingtone()
                 rejectCall(callerPeer)
             }
         }
@@ -251,6 +256,7 @@ class BluetoothCallService : LifecycleService() {
     }
 
     private var lastHeartbeatMs = 0L
+    private var incomingRingtone: Ringtone? = null
 
     // ── Call Actions (called by ViewModel) ────────────────────────────────
 
@@ -302,6 +308,7 @@ class BluetoothCallService : LifecycleService() {
     fun acceptCall(callerPeer: PeerDevice) {
         if (_callState.value !is CallState.Ringing) return
         callTimeoutJob?.cancel()
+        stopRingtone()
 
         lifecycleScope.launch {
             // Step 1: Start accepting RFCOMM connections in the background so
@@ -344,6 +351,7 @@ class BluetoothCallService : LifecycleService() {
     fun rejectCall(callerPeer: PeerDevice) {
         if (_callState.value !is CallState.Ringing) return
         callTimeoutJob?.cancel()
+        stopRingtone()
 
         lifecycleScope.launch {
             val rejectMsg = SignalMessage(
@@ -476,6 +484,22 @@ class BluetoothCallService : LifecycleService() {
             _callState.value = CallState.Idle
         }
         updateNotification("Ready")
+    }
+
+    // ── Ringtone ──────────────────────────────────────────────────────────
+
+    private fun startRingtone() {
+        stopRingtone()
+        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        incomingRingtone = RingtoneManager.getRingtone(this, uri)?.also { ringtone ->
+            ringtone.isLooping = true
+            ringtone.play()
+        }
+    }
+
+    private fun stopRingtone() {
+        incomingRingtone?.stop()
+        incomingRingtone = null
     }
 
     private fun observeIncomingAudio() {
