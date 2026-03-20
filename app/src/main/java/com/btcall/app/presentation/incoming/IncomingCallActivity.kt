@@ -17,6 +17,7 @@ import com.btcall.app.databinding.ActivityIncomingCallBinding
 import com.btcall.app.domain.model.CallState
 import com.btcall.app.domain.model.PeerDevice
 import com.btcall.app.presentation.MainActivity
+import android.widget.Toast
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -119,6 +120,16 @@ class IncomingCallActivity : AppCompatActivity() {
                                 }
                             )
                             finish()
+                        }
+                        is CallState.Ended -> {
+                            // Accept flow failed (RFCOMM or signal error) — let user retry
+                            binding.btnAccept.isEnabled = true
+                            binding.btnReject.isEnabled = true
+                            Toast.makeText(
+                                this@IncomingCallActivity,
+                                "Connection failed. Try accepting again.",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                         is CallState.Idle -> finish()
                         else -> {}

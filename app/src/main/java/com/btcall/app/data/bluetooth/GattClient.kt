@@ -97,19 +97,10 @@ class GattClient(private val context: Context) {
                     return
                 }
 
-                // Request larger MTU for bigger payloads
-                try {
-                    g.requestMtu(512)
-                } catch (e: SecurityException) {
-                    // Proceed with default MTU
-                    writeCharacteristic(g, characteristic, message)
-                }
-            }
-
-            override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
-                Timber.d("MTU negotiated: $mtu")
-                val service = g.getService(BleConstants.SERVICE_UUID) ?: return
-                val characteristic = service.getCharacteristic(BleConstants.SIGNAL_CHARACTERISTIC_UUID) ?: return
+                // Android 5.1+ auto-negotiates MTU to 517 bytes during connection setup,
+                // so calling requestMtu() here is redundant and unreliable — onMtuChanged
+                // may never fire if the MTU is already at the requested value, causing the
+                // coroutine to hang until the 8-second timeout fires. Write directly.
                 writeCharacteristic(g, characteristic, message)
             }
 

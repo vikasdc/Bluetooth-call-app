@@ -8,6 +8,7 @@ import android.content.Intent
 import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
+import android.media.ToneGenerator
 import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -203,6 +204,7 @@ class BluetoothCallService : LifecycleService() {
         if (current !is CallState.Calling) return
 
         callTimeoutJob?.cancel()
+        stopRingbackTone()
         val peer = current.remotePeer
 
         lifecycleScope.launch {
@@ -230,6 +232,7 @@ class BluetoothCallService : LifecycleService() {
     private fun handleCallReject(msg: SignalMessage) {
         if (_callState.value !is CallState.Calling) return
         callTimeoutJob?.cancel()
+        stopRingbackTone()
         _callState.value = CallState.Ended(EndReason.REJECTED)
         resetToIdle()
     }
@@ -237,6 +240,7 @@ class BluetoothCallService : LifecycleService() {
     private fun handleCallBusy(msg: SignalMessage) {
         if (_callState.value !is CallState.Calling) return
         callTimeoutJob?.cancel()
+        stopRingbackTone()
         _callState.value = CallState.Ended(EndReason.BUSY)
         resetToIdle()
     }
@@ -257,6 +261,7 @@ class BluetoothCallService : LifecycleService() {
 
     private var lastHeartbeatMs = 0L
     private var incomingRingtone: Ringtone? = null
+    private var ringbackTone: ToneGenerator? = null
 
     // ── Call Actions (called by ViewModel) ────────────────────────────────
 
@@ -272,6 +277,7 @@ class BluetoothCallService : LifecycleService() {
 
         _callState.value = CallState.Calling(peer)
         currentDirection = CallDirection.OUTGOING
+        startRingbackTone()
 
         lifecycleScope.launch {
             val msg = SignalMessage(
@@ -291,6 +297,7 @@ class BluetoothCallService : LifecycleService() {
             callTimeoutJob = launch {
                 delay(CALL_REQUEST_TIMEOUT_MS)
                 if (_callState.value is CallState.Calling) {
+                    stopRingbackTone()
                     _callState.value = CallState.Ended(EndReason.TIMEOUT)
                     resetToIdle()
                 }
@@ -379,6 +386,7 @@ class BluetoothCallService : LifecycleService() {
         }
 
         callTimeoutJob?.cancel()
+        stopRingbackTone()
         lifecycleScope.launch {
             endCallInternal(peer, EndReason.LOCAL_HANGUP, sendSignal = true)
         }
@@ -500,6 +508,22 @@ class BluetoothCallService : LifecycleService() {
     private fun stopRingtone() {
         incomingRingtone?.stop()
         incomingRingtone = null
+    }
+
+    private fun startRingbackTone() {
+        stopRingbackTone()
+        try {
+            ringbackTone = ToneGenerator(AudioManager.STREAM_VOICE_CALL, ToneGenerator.MAX_VOLUME)
+            ringbackTone?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+        } catch (e: Exception) {
+            Timber.w(e, "Could not start ringback tone")
+        }
+    }
+
+    private fun stopRingbackTone() {
+        ringbackTone?.stopTone()
+        ringbackTone?.release()
+        ringbackTone = null
     }
 
     private fun observeIncomingAudio() {
