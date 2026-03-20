@@ -1,0 +1,16 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Android Studio
+.idea/
+*.iml
+local.properties
+
+# Keystore
+*.jks
+*.keystore
+
+# Generated
+app/src/main/assets/
