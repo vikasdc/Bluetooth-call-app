@@ -11,6 +11,7 @@ import android.media.RingtoneManager
 import android.media.ToneGenerator
 import android.os.Binder
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
@@ -27,6 +28,7 @@ import com.btcall.app.domain.usecase.EndCallUseCase
 import com.btcall.app.presentation.MainActivity
 import com.btcall.app.presentation.incoming.IncomingCallActivity
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -69,6 +71,9 @@ class BluetoothCallService : LifecycleService() {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "btcall_channel"
         private const val CHANNEL_NAME = "Bluetooth Call"
+        private const val INCOMING_CALL_NOTIFICATION_ID = 1002
+        private const val INCOMING_CALL_CHANNEL_ID = "btcall_incoming_call"
+        private const val INCOMING_CALL_CHANNEL_NAME = "Incoming Calls"
         private const val CALL_REQUEST_TIMEOUT_MS = 30_000L
         private const val HEARTBEAT_INTERVAL_MS = 5_000L
     }
@@ -181,20 +186,38 @@ class BluetoothCallService : LifecycleService() {
 
         startRingtone()
 
-        // Launch IncomingCallActivity over lock screen
+        // Show incoming call over lock screen using a full-screen intent notification.
+        // On Android 10+ startActivity() from a background service is blocked; the
+        // full-screen notification approach is the correct replacement.
         val incomingIntent = Intent(this, IncomingCallActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(IncomingCallActivity.EXTRA_CALLER_ID, callerPeer.deviceId)
             putExtra(IncomingCallActivity.EXTRA_CALLER_NAME, callerPeer.displayName)
             putExtra(IncomingCallActivity.EXTRA_CALLER_MAC, callerPeer.macAddress)
         }
-        startActivity(incomingIntent)
+        val fullScreenPi = PendingIntent.getActivity(
+            this, INCOMING_CALL_NOTIFICATION_ID, incomingIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val incomingNotification = NotificationCompat.Builder(this, INCOMING_CALL_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_bluetooth)
+            .setContentTitle("Incoming Call")
+            .setContentText("${callerPeer.displayName} is calling…")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setFullScreenIntent(fullScreenPi, true)
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .build()
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(INCOMING_CALL_NOTIFICATION_ID, incomingNotification)
 
         // Auto-reject if not answered within timeout
         callTimeoutJob?.cancel()
         callTimeoutJob = lifecycleScope.launch {
             delay(CALL_REQUEST_TIMEOUT_MS)
             if (_callState.value is CallState.Ringing) {
+                cancelIncomingCallNotification()
                 stopRingtone()
                 rejectCall(callerPeer)
             }
@@ -258,6 +281,7 @@ class BluetoothCallService : LifecycleService() {
             is CallState.Ringing -> {
                 // Caller hung up while we were ringing
                 callTimeoutJob?.cancel()
+                cancelIncomingCallNotification()
                 stopRingtone()
                 _callState.value = CallState.Ended(EndReason.REMOTE_HANGUP)
                 resetToIdle()
@@ -281,6 +305,7 @@ class BluetoothCallService : LifecycleService() {
     private var lastHeartbeatMs = 0L
     private var incomingRingtone: Ringtone? = null
     private var ringbackTone: ToneGenerator? = null
+    private var callWakeLock: PowerManager.WakeLock? = null
 
     // ── Call Actions (called by ViewModel) ────────────────────────────────
 
@@ -335,6 +360,7 @@ class BluetoothCallService : LifecycleService() {
     fun acceptCall(callerPeer: PeerDevice) {
         if (_callState.value !is CallState.Ringing) return
         callTimeoutJob?.cancel()
+        cancelIncomingCallNotification()
         stopRingtone()
 
         lifecycleScope.launch {
@@ -378,6 +404,7 @@ class BluetoothCallService : LifecycleService() {
     fun rejectCall(callerPeer: PeerDevice) {
         if (_callState.value !is CallState.Ringing) return
         callTimeoutJob?.cancel()
+        cancelIncomingCallNotification()
         stopRingtone()
 
         lifecycleScope.launch {
@@ -430,21 +457,33 @@ class BluetoothCallService : LifecycleService() {
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         audioManager.isSpeakerphoneOn = true
 
+        // Acquire a partial wake lock so the CPU stays awake during the call.
+        // RFCOMM socket will drop if the CPU enters deep sleep.
+        callWakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BTCall::CallWakeLock")
+            .also { it.acquire(30 * 60 * 1000L) } // 30-minute safety cap
+
         lifecycleScope.launch {
-            audioRepository.startPlayback()
-            audioRepository.startCapture()
+            val playbackResult = audioRepository.startPlayback()
+            if (playbackResult.isFailure) {
+                Timber.e(playbackResult.exceptionOrNull(), "Audio playback failed to start")
+            }
+            val captureResult = audioRepository.startCapture()
+            if (captureResult.isFailure) {
+                Timber.e(captureResult.exceptionOrNull(), "Audio capture failed to start")
+            }
         }
 
-        // Send captured audio over RFCOMM
-        audioSendJob = lifecycleScope.launch {
+        // Send captured audio over RFCOMM — must run on IO to avoid blocking the main thread
+        audioSendJob = lifecycleScope.launch(Dispatchers.IO) {
             audioRepository.capturedAudioPackets.collect { packet ->
                 bluetoothRepository.sendAudioData(packet.toBytes())
                     .onFailure { Timber.v("Audio send error (may be normal on hangup)") }
             }
         }
 
-        // Receive audio from RFCOMM and enqueue into jitter buffer
-        audioReceiveJob = lifecycleScope.launch {
+        // Receive audio from RFCOMM and enqueue into jitter buffer — IO to avoid 20ms blocking
+        audioReceiveJob = lifecycleScope.launch(Dispatchers.IO) {
             bluetoothRepository.incomingAudioData.collect { bytes ->
                 val packet = AudioPacket.fromBytes(bytes)
                 if (packet != null) {
@@ -499,6 +538,12 @@ class BluetoothCallService : LifecycleService() {
         stopRingbackTone()
         stopRingtone()
 
+        // Release wake lock so the CPU can sleep again
+        if (callWakeLock?.isHeld == true) {
+            callWakeLock?.release()
+        }
+        callWakeLock = null
+
         // Restore normal audio mode
         audioManager.isSpeakerphoneOn = false
         audioManager.mode = AudioManager.MODE_NORMAL
@@ -550,6 +595,11 @@ class BluetoothCallService : LifecycleService() {
         ringbackTone = null
     }
 
+    private fun cancelIncomingCallNotification() {
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        nm.cancel(INCOMING_CALL_NOTIFICATION_ID)
+    }
+
     private fun observeIncomingAudio() {
         // Handled in startAudioPipeline's audioReceiveJob
     }
@@ -557,6 +607,9 @@ class BluetoothCallService : LifecycleService() {
     // ── Notifications ─────────────────────────────────────────────────────
 
     private fun createNotificationChannel() {
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+
+        // Persistent foreground service channel (low importance — no sound/heads-up)
         val channel = NotificationChannel(
             CHANNEL_ID,
             CHANNEL_NAME,
@@ -565,8 +618,18 @@ class BluetoothCallService : LifecycleService() {
             description = "Bluetooth call status"
             setShowBadge(false)
         }
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(channel)
+
+        // Incoming call channel — IMPORTANCE_HIGH is required for heads-up and full-screen intent
+        val incomingChannel = NotificationChannel(
+            INCOMING_CALL_CHANNEL_ID,
+            INCOMING_CALL_CHANNEL_NAME,
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Incoming Bluetooth call alerts"
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        }
+        nm.createNotificationChannel(incomingChannel)
     }
 
     private fun buildIdleNotification(): Notification {

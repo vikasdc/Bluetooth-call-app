@@ -1,5 +1,6 @@
 package com.btcall.app.presentation.incoming
 
+import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -7,6 +8,7 @@ import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
@@ -17,7 +19,6 @@ import com.btcall.app.databinding.ActivityIncomingCallBinding
 import com.btcall.app.domain.model.CallState
 import com.btcall.app.domain.model.PeerDevice
 import com.btcall.app.presentation.MainActivity
-import android.widget.Toast
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -38,6 +39,7 @@ class IncomingCallActivity : AppCompatActivity() {
         const val EXTRA_CALLER_ID   = "caller_id"
         const val EXTRA_CALLER_NAME = "caller_name"
         const val EXTRA_CALLER_MAC  = "caller_mac"
+        private const val INCOMING_CALL_NOTIFICATION_ID = 1002
     }
 
     private lateinit var binding: ActivityIncomingCallBinding
@@ -86,6 +88,10 @@ class IncomingCallActivity : AppCompatActivity() {
 
         binding.btnAccept.setOnClickListener { acceptCall() }
         binding.btnReject.setOnClickListener { rejectCall() }
+
+        // Activity is now visible — dismiss the incoming call notification from the shade
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+            .cancel(INCOMING_CALL_NOTIFICATION_ID)
 
         bindService(
             Intent(this, BluetoothCallService::class.java),
