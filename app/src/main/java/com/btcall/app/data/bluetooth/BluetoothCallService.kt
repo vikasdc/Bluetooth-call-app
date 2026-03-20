@@ -233,21 +233,28 @@ class BluetoothCallService : LifecycleService() {
         val peer = current.remotePeer
 
         lifecycleScope.launch {
-            // RFCOMM connect with retries — callee server socket may not be ready instantly
+            // RFCOMM connect with retries.
+            // BT Classic ACL establishment can take 3-10s on first connect.
+            // Also cancel BLE discovery first — it interferes with the ACL setup on 2.4GHz.
+            bluetoothRepository.stopDiscovery()
+            bluetoothRepository.stopAdvertising()
+
             var connected = false
-            for (attempt in 1..3) {
+            for (attempt in 1..5) {
+                Timber.d("RFCOMM connect attempt $attempt/5")
                 val result = bluetoothRepository.connectRfcomm(peer)
                 if (result.isSuccess) {
                     connected = true
                     break
                 }
                 Timber.w("RFCOMM connect attempt $attempt failed: ${result.exceptionOrNull()?.message}")
-                if (attempt < 3) delay(500L * attempt)
+                if (attempt < 5) delay(3_000L)  // 3s between attempts — gives BT stack time to recover
             }
             if (connected) {
                 startAudioPipeline(peer)
             } else {
-                Timber.e("RFCOMM connect failed after 3 attempts")
+                Timber.e("RFCOMM connect failed after 5 attempts")
+                startBluetoothStack()  // Resume BLE since we never reached startAudioPipeline
                 _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
                 resetToIdle()
             }
@@ -364,6 +371,10 @@ class BluetoothCallService : LifecycleService() {
         stopRingtone()
 
         lifecycleScope.launch {
+            // Stop BLE before opening RFCOMM — prevents 2.4GHz interference on callee side too
+            bluetoothRepository.stopDiscovery()
+            bluetoothRepository.stopAdvertising()
+
             // Step 1: Start accepting RFCOMM connections in the background so
             // the server socket is bound before the caller gets CALL_ACCEPT.
             val rfcommJob = launch {
@@ -372,6 +383,7 @@ class BluetoothCallService : LifecycleService() {
                 }.onFailure { err ->
                     Timber.e(err, "RFCOMM accept failed")
                     if (_callState.value !is CallState.Connected) {
+                        startBluetoothStack()  // Resume BLE since audio never started
                         _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
                         resetToIdle()
                     }
@@ -463,6 +475,13 @@ class BluetoothCallService : LifecycleService() {
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BTCall::CallWakeLock")
             .also { it.acquire(30 * 60 * 1000L) } // 30-minute safety cap
 
+        // Stop BLE scan and advertising for the duration of the call.
+        // SCAN_MODE_LOW_LATENCY aggressively sweeps 2.4GHz channels and directly
+        // interferes with Bluetooth Classic (RFCOMM) — this is the primary cause of
+        // audio dropping after a few seconds.
+        bluetoothRepository.stopDiscovery()
+        bluetoothRepository.stopAdvertising()
+
         lifecycleScope.launch {
             val playbackResult = audioRepository.startPlayback()
             if (playbackResult.isFailure) {
@@ -503,10 +522,15 @@ class BluetoothCallService : LifecycleService() {
             }
         }
 
-        // Observe RFCOMM connection — end call immediately when socket drops
+        // Observe RFCOMM connection — end call when socket drops.
+        // dropWhile { !it } skips any initial false value and waits until we first
+        // see true (confirmed connected), then filter { !it } catches the drop.
+        // This prevents a race where _isRfcommConnected is still false for a brief
+        // moment between connectToDevice() returning and this coroutine launching.
         rfcommDisconnectJob = lifecycleScope.launch {
             bluetoothRepository.rfcommConnected
-                .filter { connected -> !connected }
+                .dropWhile { !it }   // Wait for confirmed connected (true)
+                .filter { !it }      // Then detect when it drops (false)
                 .first()
             val current = _callState.value
             if (current is CallState.Connected) {
@@ -559,6 +583,12 @@ class BluetoothCallService : LifecycleService() {
         lifecycleScope.launch {
             delay(2_000L)  // Show ended state briefly
             _callState.value = CallState.Idle
+        }
+        // Restart BLE scan/advertising now that RFCOMM is done.
+        // Small delay to let RFCOMM teardown complete before re-activating 2.4GHz radio.
+        lifecycleScope.launch {
+            delay(1_000L)
+            startBluetoothStack()
         }
         updateNotification("Ready")
     }

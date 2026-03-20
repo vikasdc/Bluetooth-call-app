@@ -70,7 +70,7 @@ class RfcommManager @Inject constructor(@ApplicationContext private val context:
      *
      * @param timeoutMs Max time to wait for a connection (default 15s)
      */
-    suspend fun acceptConnection(timeoutMs: Long = 15_000L) = withContext(Dispatchers.IO) {
+    suspend fun acceptConnection(timeoutMs: Long = 60_000L) = withContext(Dispatchers.IO) {
         Timber.d("RFCOMM: opening server socket")
 
         val btAdapter = adapter ?: throw IllegalStateException("Bluetooth not available")
