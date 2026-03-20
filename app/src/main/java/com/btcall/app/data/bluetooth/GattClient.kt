@@ -4,13 +4,13 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import com.btcall.app.domain.model.SignalMessage
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -18,13 +18,11 @@ import kotlin.coroutines.resumeWithException
  * GATT Client that connects to a peer's GATT server to write signaling messages.
  *
  * Each send operation:
- * 1. Connect to peer's GATT server (or reuse existing connection)
+ * 1. Connect to peer's GATT server
  * 2. Discover services
- * 3. Write to SIGNAL_CHARACTERISTIC
- * 4. Disconnect (or keep alive for heartbeats)
- *
- * We use a short-lived connection per signal to keep it simple and avoid
- * managing long-lived GATT connections for multiple peers.
+ * 3. Negotiate MTU (signal messages are ~60-90 bytes, default BLE MTU is only 20 bytes payload)
+ * 4. Write to SIGNAL_CHARACTERISTIC
+ * 5. Disconnect
  */
 class GattClient(private val context: Context) {
 
@@ -37,7 +35,7 @@ class GattClient(private val context: Context) {
     suspend fun sendSignal(
         device: BluetoothDevice,
         message: SignalMessage,
-        timeoutMs: Long = 8_000L
+        timeoutMs: Long = 10_000L
     ): Boolean {
         return withTimeoutOrNull(timeoutMs) {
             sendSignalInternal(device, message)
@@ -52,6 +50,9 @@ class GattClient(private val context: Context) {
         message: SignalMessage
     ): Boolean = suspendCancellableCoroutine { cont ->
         var gatt: BluetoothGatt? = null
+        // Guard against double-write: onMtuChanged and the fallback in onServicesDiscovered
+        // can both attempt to write. AtomicBoolean ensures exactly one write happens.
+        val writeStarted = AtomicBoolean(false)
 
         val callback = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
@@ -66,7 +67,6 @@ class GattClient(private val context: Context) {
                     }
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     if (cont.isActive && !cont.isCompleted) {
-                        // Disconnected before write completed
                         cont.resume(false)
                     }
                     try { g.close() } catch (_: Exception) {}
@@ -97,11 +97,41 @@ class GattClient(private val context: Context) {
                     return
                 }
 
-                // Android 5.1+ auto-negotiates MTU to 517 bytes during connection setup,
-                // so calling requestMtu() here is redundant and unreliable — onMtuChanged
-                // may never fire if the MTU is already at the requested value, causing the
-                // coroutine to hang until the 8-second timeout fires. Write directly.
-                writeCharacteristic(g, characteristic, message)
+                // Signal messages are ~60-90 bytes but the default BLE ATT MTU is only
+                // 23 bytes (20 payload). We MUST negotiate a larger MTU before writing.
+                val mtuRequested = try {
+                    g.requestMtu(512)
+                } catch (e: SecurityException) {
+                    Timber.w(e, "SecurityException requesting MTU")
+                    false
+                }
+
+                if (!mtuRequested) {
+                    // requestMtu failed to initiate — write immediately with whatever MTU
+                    // we have. May fail for large messages, but at least we try.
+                    Timber.w("requestMtu() returned false, writing with default MTU")
+                    if (writeStarted.compareAndSet(false, true)) {
+                        writeCharacteristic(g, characteristic, message)
+                    }
+                }
+                // If mtuRequested == true, onMtuChanged will fire and trigger the write.
+            }
+
+            override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+                Timber.d("MTU negotiated: $mtu (status=$status)")
+                // Write regardless of MTU status — even if negotiation "failed," the
+                // Android stack often still increases the MTU from the default.
+                if (writeStarted.compareAndSet(false, true)) {
+                    val service = g.getService(BleConstants.SERVICE_UUID)
+                    val characteristic = service?.getCharacteristic(BleConstants.SIGNAL_CHARACTERISTIC_UUID)
+                    if (service == null || characteristic == null) {
+                        Timber.e("Lost service/characteristic reference after MTU change")
+                        g.close()
+                        if (cont.isActive) cont.resume(false)
+                        return
+                    }
+                    writeCharacteristic(g, characteristic, message)
+                }
             }
 
             override fun onCharacteristicWrite(

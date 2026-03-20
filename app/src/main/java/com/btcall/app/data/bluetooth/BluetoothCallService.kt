@@ -123,6 +123,8 @@ class BluetoothCallService : LifecycleService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        stopRingbackTone()
+        stopRingtone()
         bluetoothRepository.stopDiscovery()
         bluetoothRepository.stopAdvertising()
         audioRepository.stopCapture()
@@ -247,10 +249,27 @@ class BluetoothCallService : LifecycleService() {
 
     private fun handleCallEnd(msg: SignalMessage) {
         val current = _callState.value
-        if (current !is CallState.Connected) return
-
-        lifecycleScope.launch {
-            endCallInternal(current.remotePeer, EndReason.REMOTE_HANGUP, sendSignal = false)
+        when (current) {
+            is CallState.Connected -> {
+                lifecycleScope.launch {
+                    endCallInternal(current.remotePeer, EndReason.REMOTE_HANGUP, sendSignal = false)
+                }
+            }
+            is CallState.Ringing -> {
+                // Caller hung up while we were ringing
+                callTimeoutJob?.cancel()
+                stopRingtone()
+                _callState.value = CallState.Ended(EndReason.REMOTE_HANGUP)
+                resetToIdle()
+            }
+            is CallState.Calling -> {
+                // Remote ended while we were calling
+                callTimeoutJob?.cancel()
+                stopRingbackTone()
+                _callState.value = CallState.Ended(EndReason.REMOTE_HANGUP)
+                resetToIdle()
+            }
+            else -> {}
         }
     }
 
@@ -288,6 +307,7 @@ class BluetoothCallService : LifecycleService() {
             )
             bluetoothRepository.sendSignal(peer, msg).onFailure { err ->
                 Timber.e(err, "Failed to send CALL_REQUEST")
+                stopRingbackTone()
                 _callState.value = CallState.Ended(EndReason.CONNECTION_LOST)
                 resetToIdle()
             }
@@ -476,13 +496,17 @@ class BluetoothCallService : LifecycleService() {
         callTimerJob?.cancel()
         heartbeatJob?.cancel()
         rfcommDisconnectJob?.cancel()
+        stopRingbackTone()
+        stopRingtone()
 
         // Restore normal audio mode
         audioManager.isSpeakerphoneOn = false
         audioManager.mode = AudioManager.MODE_NORMAL
 
-        endCallUseCase(peer, currentDirection, callStartTimestamp, reason, sendSignal)
+        // Update state BEFORE the potentially blocking signal send so the UI
+        // transitions immediately instead of freezing for up to 10 seconds.
         _callState.value = CallState.Ended(reason)
+        endCallUseCase(peer, currentDirection, callStartTimestamp, reason, sendSignal)
         resetToIdle()
     }
 

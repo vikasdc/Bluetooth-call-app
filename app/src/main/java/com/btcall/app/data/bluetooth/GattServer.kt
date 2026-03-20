@@ -51,6 +51,10 @@ class GattServer @Inject constructor(
     private val _incomingSignals = Channel<SignalMessage>(Channel.BUFFERED)
     val incomingSignals: Flow<SignalMessage> = _incomingSignals.receiveAsFlow()
 
+    // Prepared (long) write buffer: accumulates chunks per device until Execute Write.
+    // Key = device address, Value = accumulated byte data.
+    private val preparedWriteBuffers = mutableMapOf<String, ByteArray>()
+
     private lateinit var signalCharacteristic: BluetoothGattCharacteristic
     private lateinit var presenceCharacteristic: BluetoothGattCharacteristic
 
@@ -80,17 +84,18 @@ class GattServer @Inject constructor(
             value: ByteArray
         ) {
             if (characteristic.uuid == BleConstants.SIGNAL_CHARACTERISTIC_UUID) {
-                val msg = SignalMessage.fromBytes(value)
-                if (msg != null) {
-                    // Override senderMac with the actual Bluetooth device address from the
-                    // GATT connection. The caller cannot know its own MAC (randomized on
-                    // Android 6+), but we can capture it here from the connection object.
-                    val actualMac = try { device.address } catch (_: SecurityException) { msg.senderMac }
-                    val msgWithMac = msg.copy(senderMac = actualMac)
-                    Timber.d("GATT received signal: ${msgWithMac.type} from ${msgWithMac.senderId.take(8)} mac=$actualMac")
-                    _incomingSignals.trySend(msgWithMac)
+                if (preparedWrite) {
+                    // Long write: accumulate chunk and wait for onExecuteWrite
+                    val addr = try { device.address } catch (_: SecurityException) { "?" }
+                    val existing = preparedWriteBuffers[addr] ?: ByteArray(0)
+                    // Expand buffer to fit data at the given offset
+                    val needed = offset + value.size
+                    val buf = if (existing.size < needed) existing.copyOf(needed) else existing
+                    System.arraycopy(value, 0, buf, offset, value.size)
+                    preparedWriteBuffers[addr] = buf
                 } else {
-                    Timber.w("GATT received unrecognised signal payload")
+                    // Normal (single) write — process immediately
+                    processSignalPayload(device, value)
                 }
             }
 
@@ -100,6 +105,23 @@ class GattServer @Inject constructor(
                 } catch (e: SecurityException) {
                     Timber.e(e, "SecurityException sending GATT response")
                 }
+            }
+        }
+
+        override fun onExecuteWrite(device: BluetoothDevice, requestId: Int, execute: Boolean) {
+            val addr = try { device.address } catch (_: SecurityException) { "?" }
+            if (execute) {
+                val data = preparedWriteBuffers.remove(addr)
+                if (data != null) {
+                    processSignalPayload(device, data)
+                }
+            } else {
+                preparedWriteBuffers.remove(addr)
+            }
+            try {
+                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+            } catch (e: SecurityException) {
+                Timber.e(e, "SecurityException sending execute-write response")
             }
         }
 
@@ -123,6 +145,18 @@ class GattServer @Inject constructor(
 
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
             Timber.d("GATT MTU changed to $mtu for ${try { device.address } catch (e: SecurityException) { "?" }}")
+        }
+    }
+
+    private fun processSignalPayload(device: BluetoothDevice, value: ByteArray) {
+        val msg = SignalMessage.fromBytes(value)
+        if (msg != null) {
+            val actualMac = try { device.address } catch (_: SecurityException) { msg.senderMac }
+            val msgWithMac = msg.copy(senderMac = actualMac)
+            Timber.d("GATT received signal: ${msgWithMac.type} from ${msgWithMac.senderId.take(8)} mac=$actualMac")
+            _incomingSignals.trySend(msgWithMac)
+        } else {
+            Timber.w("GATT received unrecognised signal payload (${value.size} bytes)")
         }
     }
 
