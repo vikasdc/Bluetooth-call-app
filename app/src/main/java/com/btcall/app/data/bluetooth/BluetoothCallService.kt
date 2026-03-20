@@ -523,15 +523,11 @@ class BluetoothCallService : LifecycleService() {
         }
 
         // Observe RFCOMM connection — end call when socket drops.
-        // dropWhile { !it } skips any initial false value and waits until we first
-        // see true (confirmed connected), then filter { !it } catches the drop.
-        // This prevents a race where _isRfcommConnected is still false for a brief
-        // moment between connectToDevice() returning and this coroutine launching.
+        // Two-step: first wait for confirmed true (avoids the race where the StateFlow
+        // still holds its initial false when this job launches), then wait for false.
         rfcommDisconnectJob = lifecycleScope.launch {
-            bluetoothRepository.rfcommConnected
-                .dropWhile { !it }   // Wait for confirmed connected (true)
-                .filter { !it }      // Then detect when it drops (false)
-                .first()
+            bluetoothRepository.rfcommConnected.first { it }   // Wait for confirmed connected
+            bluetoothRepository.rfcommConnected.first { !it }  // Then detect drop
             val current = _callState.value
             if (current is CallState.Connected) {
                 Timber.w("RFCOMM socket dropped — ending call")
