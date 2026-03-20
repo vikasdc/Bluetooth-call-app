@@ -36,12 +36,7 @@ class AcceptCallUseCase @Inject constructor(
             return Result.Error(err.message ?: "Failed to send accept")
         }
 
-        // Accept incoming RFCOMM connection
-        bluetoothRepository.acceptRfcomm().onFailure { err ->
-            Timber.e(err, "RFCOMM accept failed")
-            return Result.Error(err.message ?: "Connection setup failed")
-        }
-
+        // Audio connection setup is handled in BluetoothCallService.acceptCall()
         return Result.Connected
     }
 }

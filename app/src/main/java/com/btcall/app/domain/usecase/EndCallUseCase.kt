@@ -39,8 +39,8 @@ class EndCallUseCase @Inject constructor(
         audioRepository.stopCapture()
         audioRepository.stopPlayback()
 
-        // Close RFCOMM
-        bluetoothRepository.disconnectRfcomm()
+        // Close WiFi Direct audio socket
+        bluetoothRepository.disconnectAudio()
 
         // Persist call record
         val endTs = System.currentTimeMillis()

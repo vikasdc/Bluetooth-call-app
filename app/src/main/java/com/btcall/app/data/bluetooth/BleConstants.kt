@@ -49,4 +49,7 @@ object BleConstants {
 
     /** TCP port used for WiFi Direct audio streaming */
     const val WIFI_DIRECT_AUDIO_PORT = 50007
+
+    /** Kept for source-compatibility with RfcommManager (no longer used at runtime) */
+    val RFCOMM_UUID: java.util.UUID = java.util.UUID.fromString("0000A2B6-0000-1000-8000-00805F9B34FB")
 }
